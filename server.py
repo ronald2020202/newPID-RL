@@ -379,40 +379,24 @@ if PYTORCH_AVAILABLE:
             kp, ki, kd = pid_params
             
             try:
-                # Safety check before test
-                if not self.training_active:
-                    return -100
-                
-                # Quick 3-second test with safety checks
+                # Quick 3-second test
                 self.controller.send_command('PID_OFF')
                 time.sleep(0.1)
-                
-                # Check if training stopped during setup
-                if not self.training_active:
-                    return -100
-                
                 self.controller.send_command(f'PID {kp:.3f} {ki:.3f} {kd:.3f}')
                 self.controller.send_command(f'TARGET {self.target_angle}')
                 self.controller.send_command('PID_ON')
                 
-                # Collect data with safety checks
+                # Collect data
                 start_time = time.time()
                 errors = []
                 stable_counts = []
                 
                 while time.time() - start_time < 3.0:
-                    # Safety check during test
-                    if not self.training_active:
-                        self.controller.send_command('PID_OFF')
-                        self.controller.send_command('STOP')
-                        return -100
-                    
                     status = self.controller.get_status()
                     errors.append(abs(status.get('error', 0)))
                     stable_counts.append(status.get('stable_count', 0))
                     time.sleep(0.15)
                 
-                # Always disable PID after test
                 self.controller.send_command('PID_OFF')
                 
                 # Calculate reward
@@ -437,12 +421,6 @@ if PYTORCH_AVAILABLE:
                 
             except Exception as e:
                 logger.error(f"Test error: {e}")
-                # Emergency stop on error
-                try:
-                    self.controller.send_command('PID_OFF')
-                    self.controller.send_command('STOP')
-                except:
-                    pass
                 return -100
 
 # Flask app setup
@@ -614,34 +592,12 @@ def create_dashboard_template():
                         <label>Target Angle (°)</label>
                         <input type="number" id="rlTarget" value="180" step="0.1">
                     </div>
-                    
-                    <!-- Baseline Selection -->
-                    <div class="input-group">
-                        <label>PPO Baseline</label>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-bottom: 8px;">
-                            <input type="number" id="baselineKp" step="0.1" value="10.0" placeholder="Kp">
-                            <input type="number" id="baselineKi" step="0.01" value="0.0" placeholder="Ki">  
-                            <input type="number" id="baselineKd" step="0.1" value="30.0" placeholder="Kd">
-                        </div>
-                        <div style="display: flex; gap: 5px;">
-                            <button class="button" onclick="setBaseline()" style="flex: 1; font-size: 0.8rem;">Set Baseline</button>
-                            <button class="button" onclick="loadCurrentAsBaseline()" style="flex: 1; font-size: 0.8rem;">Use Current PID</button>
-                        </div>
-                    </div>
-                    
-                    <button class="button success" onclick="startTraining()" id="startTrainingBtn">🚀 Start PPO</button>
-                    <button class="button danger" onclick="emergencyStopTraining()" id="emergencyStopBtn">🚨 EMERGENCY STOP</button>
+                    <button class="button success" onclick="startTraining()">🚀 Start PPO</button>
+                    <button class="button danger" onclick="stopTraining()">⏹ Stop</button>
+                    <button class="button" onclick="updateBaseline()" style="width: 100%; margin-top: 10px; font-size: 0.8rem;">📍 Update Baseline</button>
                 </div>
                 <div id="trainingStatus" style="text-align: center; color: #94a3b8; padding: 20px;">
-                    <div>Ready for PPO training</div>
-                    <div style="margin-top: 15px; padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 8px;">
-                        <div style="font-size: 0.9rem; color: #60a5fa; margin-bottom: 5px;">Current Baseline:</div>
-                        <div style="font-size: 0.8rem;">
-                            Kp: <span id="currentBaselineKp">10.0</span> | 
-                            Ki: <span id="currentBaselineKi">0.0</span> | 
-                            Kd: <span id="currentBaselineKd">30.0</span>
-                        </div>
-                    </div>
+                    Ready for PPO training
                 </div>
                 <div style="text-align: center;">
                     <div>Episode: <span id="currentEpisode">0</span></div>
@@ -761,48 +717,22 @@ def create_dashboard_template():
             const episodes = document.getElementById('episodes').value;
             const target = document.getElementById('rlTarget').value;
             
-            // Disable start button, enable emergency stop
-            document.getElementById('startTrainingBtn').disabled = true;
-            document.getElementById('emergencyStopBtn').disabled = false;
-            
             socket.emit('start_online_training', {
                 episodes: parseInt(episodes),
                 target: parseFloat(target)
             });
         }
 
-        function emergencyStopTraining() {
-            socket.emit('emergency_stop_training');
-            
-            // Re-enable start button, disable emergency stop
-            document.getElementById('startTrainingBtn').disabled = false;
-            document.getElementById('emergencyStopBtn').disabled = true;
-            
-            logMessage('🚨 EMERGENCY STOP activated', 'warning');
+        function stopTraining() {
+            socket.emit('stop_online_training');
         }
 
-        function setBaseline() {
-            const kp = parseFloat(document.getElementById('baselineKp').value);
-            const ki = parseFloat(document.getElementById('baselineKi').value);
-            const kd = parseFloat(document.getElementById('baselineKd').value);
-            
-            socket.emit('set_baseline', {kp: kp, ki: ki, kd: kd});
-        }
-
-        function loadCurrentAsBaseline() {
+        function updateBaseline() {
             const kp = parseFloat(document.getElementById('kpValue').value);
             const ki = parseFloat(document.getElementById('kiValue').value);
             const kd = parseFloat(document.getElementById('kdValue').value);
             
-            // Update baseline input fields
-            document.getElementById('baselineKp').value = kp.toFixed(1);
-            document.getElementById('baselineKi').value = ki.toFixed(2);
-            document.getElementById('baselineKd').value = kd.toFixed(1);
-            
-            // Send to server
-            socket.emit('set_baseline', {kp: kp, ki: ki, kd: kd});
-            
-            logMessage('📍 Loaded current PID as baseline', 'response');
+            socket.emit('update_baseline', {kp: kp, ki: ki, kd: kd});
         }
 
         function updateStatus(data) {
@@ -893,13 +823,6 @@ def create_dashboard_template():
             document.getElementById('currentEpisode').textContent = data.episode || 0;
             document.getElementById('bestReward').textContent = (data.best_reward || 0).toFixed(2);
             
-            // Update baseline display
-            if (data.baseline_params) {
-                document.getElementById('currentBaselineKp').textContent = data.baseline_params.kp.toFixed(1);
-                document.getElementById('currentBaselineKi').textContent = data.baseline_params.ki.toFixed(2);
-                document.getElementById('currentBaselineKd').textContent = data.baseline_params.kd.toFixed(1);
-            }
-            
             if (data.best_params) {
                 document.getElementById('bestKp').textContent = data.best_params.kp.toFixed(2);
                 document.getElementById('bestKi').textContent = data.best_params.ki.toFixed(2);
@@ -919,22 +842,9 @@ def create_dashboard_template():
                         Reward: ${data.current_reward ? data.current_reward.toFixed(2) : '--'}
                         ${data.avg_recent_reward ? ' (Avg: ' + data.avg_recent_reward.toFixed(2) + ')' : ''}
                     </div>
-                    <div style="margin-top: 10px; padding: 8px; background: rgba(59, 130, 246, 0.1); border-radius: 6px;">
-                        <div style="font-size: 0.8rem; color: #60a5fa;">Baseline: 
-                            Kp=${data.baseline_params ? data.baseline_params.kp.toFixed(1) : '--'}, 
-                            Ki=${data.baseline_params ? data.baseline_params.ki.toFixed(2) : '--'}, 
-                            Kd=${data.baseline_params ? data.baseline_params.kd.toFixed(1) : '--'}
-                        </div>
-                    </div>
                 `;
             }
         }
-
-        // Handle training complete
-        socket.on('training_complete', () => {
-            document.getElementById('startTrainingBtn').disabled = false;
-            document.getElementById('emergencyStopBtn').disabled = true;
-        });
 
         function logMessage(message, type = 'info') {
             const log = document.getElementById('logContent');
@@ -1035,32 +945,17 @@ if PYTORCH_AVAILABLE:
         global online_trainer
         if online_trainer:
             online_trainer.training_active = False
-            emit('training_complete', {})
 
-    @socketio.on('emergency_stop_training')
-    def handle_emergency_stop():
+    @socketio.on('update_baseline')
+    def handle_update_baseline(data):
         global online_trainer
-        if online_trainer:
-            online_trainer.stop_training()
-
-    @socketio.on('set_baseline')
-    def handle_set_baseline(data):
-        global online_trainer
-        kp = data.get('kp', 10.0)
-        ki = data.get('ki', 0.0)
-        kd = data.get('kd', 30.0)
-        
         if online_trainer and online_trainer.agent:
+            kp = data.get('kp', 10.0)
+            ki = data.get('ki', 0.0)
+            kd = data.get('kd', 30.0)
+            
             online_trainer.agent.baseline_params = np.array([kp, ki, kd])
-        
-        emit('log_message', {'message': f'📍 Baseline set: Kp={kp:.2f}, Ki={ki:.2f}, Kd={kd:.2f}', 'type': 'response'})
-        
-        # Send back the updated baseline for display
-        emit('baseline_updated', {
-            'kp': kp,
-            'ki': ki, 
-            'kd': kd
-        })
+            emit('log_message', {'message': f'📍 Baseline updated: Kp={kp:.2f}, Ki={ki:.2f}, Kd={kd:.2f}', 'type': 'response'})
 else:
     @socketio.on('start_online_training')
     def handle_no_pytorch(data):
