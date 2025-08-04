@@ -640,7 +640,7 @@ def handle_arduino_connect(data):
         
         if arduino_controller.connect():
             emit('log_message', {'message': f'Connected to Arduino at {arduino_ip}', 'type': 'response'})
-            #start_status_monitoring()
+            start_status_monitoring()
         else:
             emit('log_message', {'message': f'Failed to connect to Arduino at {arduino_ip}', 'type': 'error'})
             
