@@ -1,7 +1,5 @@
 #include <PID_v1.h>
 #include <WiFiS3.h>
-///////////////////////////////////////////////////////////////////////////// WORKING 2025-08-03 18:10 /////////////////////
-///////////////////////////////////////////////////////////////////////////// Motor control over wifi works, now time to get RL ///////////
 
 // WiFi credentials - CHANGE THESE TO YOUR NETWORK
 const char* ssid = "TP-Link Li Home";
@@ -128,7 +126,7 @@ void setupWiFi() {
     snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", 
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     Serial.println(macStr);
-        
+    
     // Start the server
     server.begin();
     Serial.println("TCP server started on port 80");
@@ -333,7 +331,6 @@ String getStatusString() {
   return status;
 }
 
-// Add missing constants for your working code
 
 void sendStatusUpdate() {
   if (clientConnected && client.connected()) {
