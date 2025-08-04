@@ -98,18 +98,27 @@ class ArduinoPIDController:
             return f"ERROR {e}"
     
     def get_status(self) -> Dict:
-        """Get current status"""
+        """Get current status with better error handling"""
         try:
             response = self.send_command("STATUS")
+            print(f"🔍 Raw status response: '{response}'")  # Debug output
+            
             if response.startswith("STATUS "):
-                return self._parse_status(response[7:])
-            return {}
-        except:
+                status_data = self._parse_status(response[7:])
+                print(f"🔍 Parsed status: {status_data}")  # Debug output
+                return status_data
+            else:
+                print(f"⚠️  Unexpected status response: '{response}'")
+                return {}
+        except Exception as e:
+            print(f"❌ Status error: {e}")
             return {}
     
     def _parse_status(self, status_string: str) -> Dict:
-        """Parse status string into dictionary"""
+        """Parse status string into dictionary with better error handling"""
         try:
+            print(f"🔍 Parsing status string: '{status_string}'")
+            
             pairs = status_string.split(',')
             status_dict = {}
             
@@ -119,6 +128,7 @@ class ArduinoPIDController:
                     key = key.strip()
                     value = value.strip()
                     
+                    # Convert values
                     if value.lower() == 'true':
                         value = True
                     elif value.lower() == 'false':
@@ -130,15 +140,16 @@ class ArduinoPIDController:
                             else:
                                 value = int(value)
                         except ValueError:
-                            pass
+                            pass  # Keep as string
                     
                     status_dict[key] = value
+                    print(f"🔍   {key} = {value}")
             
             status_dict['timestamp'] = time.time()
             return status_dict
             
         except Exception as e:
-            logger.error(f"Error parsing status: {e}")
+            print(f"❌ Status parsing error: {e}")
             return {}
     
     def is_healthy(self) -> bool:
@@ -690,46 +701,60 @@ def handle_stop_training():
     emit('log_message', {'message': 'Training stopped', 'type': 'warning'})
 
 def start_status_monitoring():
-    """Start status monitoring thread - FIXED to prevent loops"""
+    """Start status monitoring thread - FIXED to update visuals properly"""
     global status_monitoring_active
     
     status_monitoring_active = True
+    print("🔍 Starting status monitoring thread...")
     
     def monitor():
         global status_monitoring_active
         consecutive_failures = 0
-        max_failures = 3
+        max_failures = 5
         
         while status_monitoring_active and arduino_controller:
             try:
                 if arduino_controller.connected:
+                    # Get status from Arduino
                     status = arduino_controller.get_status()
                     
-                    if status:
+                    if status and len(status) > 1:  # Make sure we got real data
                         status['connected'] = True
+                        
+                        # Debug: Print what we're sending to web interface
+                        print(f"📊 Status update: degrees={status.get('degrees', 'N/A')}, target={status.get('target_degrees', 'N/A')}, pid={status.get('pid_enabled', 'N/A')}")
+                        
+                        # Send to web interface
                         socketio.emit('arduino_status', status)
                         consecutive_failures = 0
+                        
                     else:
                         consecutive_failures += 1
+                        print(f"⚠️  Empty status response ({consecutive_failures}/{max_failures})")
+                        
                         if consecutive_failures >= max_failures:
-                            logger.warning("Status monitoring: too many failures, stopping")
+                            print("❌ Too many status failures, stopping monitoring")
                             status_monitoring_active = False
                             socketio.emit('arduino_status', {'connected': False})
                             break
                 else:
+                    print("❌ Arduino not connected, stopping monitoring")
                     socketio.emit('arduino_status', {'connected': False})
                     break
                     
             except Exception as e:
-                logger.error(f"Status monitoring error: {e}")
                 consecutive_failures += 1
+                print(f"❌ Status monitoring error ({consecutive_failures}/{max_failures}): {e}")
+                
                 if consecutive_failures >= max_failures:
                     status_monitoring_active = False
+                    socketio.emit('arduino_status', {'connected': False})
                     break
             
-            # Wait between status checks - LONGER interval to reduce load
-            time.sleep(1.0)  # Increased from 0.5 to 1.0 seconds
+            # Wait between status checks
+            time.sleep(2.0)  # Slower updates to be more stable
         
+        print("🔍 Status monitoring thread stopped")
         status_monitoring_active = False
     
     thread = threading.Thread(target=monitor, daemon=True)
