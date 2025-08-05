@@ -844,7 +844,7 @@ def handle_stop_training():
     emit('log_message', {'message': 'Training stopped', 'type': 'warning'})
 
 def start_status_monitoring():
-    """Start status monitoring thread - FIXED WebSocket emission"""
+    """Start status monitoring thread - FINAL FIX"""
     global status_monitoring_active
     
     status_monitoring_active = True
@@ -866,10 +866,10 @@ def start_status_monitoring():
                         
                         print(f"📊 Status update: degrees={status.get('degrees', 'N/A')}, target={status.get('target_degrees', 'N/A')}, pid={status.get('pid_enabled', 'N/A')}")
                         
-                        # FIXED: Use socketio.emit with broadcast=True to reach ALL clients
+                        # FIXED: Remove broadcast=True - just use regular emit
                         try:
-                            socketio.emit('arduino_status', status, broadcast=True)
-                            print("✅ Status broadcast sent to all clients")
+                            socketio.emit('arduino_status', status)
+                            print("✅ Status sent to clients")
                         except Exception as emit_error:
                             print(f"❌ Failed to emit status: {emit_error}")
                         
@@ -882,11 +882,11 @@ def start_status_monitoring():
                         if consecutive_failures >= max_failures:
                             print("❌ Too many status failures, stopping monitoring")
                             status_monitoring_active = False
-                            socketio.emit('arduino_status', {'connected': False}, broadcast=True)
+                            socketio.emit('arduino_status', {'connected': False})
                             break
                 else:
                     print("❌ Arduino not connected, stopping monitoring")
-                    socketio.emit('arduino_status', {'connected': False}, broadcast=True)
+                    socketio.emit('arduino_status', {'connected': False})
                     break
                     
             except Exception as e:
@@ -895,7 +895,7 @@ def start_status_monitoring():
                 
                 if consecutive_failures >= max_failures:
                     status_monitoring_active = False
-                    socketio.emit('arduino_status', {'connected': False}, broadcast=True)
+                    socketio.emit('arduino_status', {'connected': False})
                     break
             
             # Wait between status checks
