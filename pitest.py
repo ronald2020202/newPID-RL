@@ -90,36 +90,61 @@ class ArduinoPIDController:
             return f"ERROR {e}"
     
     def _read_response(self) -> str:
-        """Read response from Arduino"""
+        """Read response from Arduino - FIXED to handle multiple responses"""
         try:
-            data = self.socket.recv(1024).decode('utf-8', errors='ignore').strip()
+            data = self.socket.recv(4096).decode('utf-8', errors='ignore').strip()  # Bigger buffer
+            
+            # If we got multiple STATUS responses, just take the last complete one
+            if 'STATUS ' in data:
+                # Split by STATUS and get the last complete one
+                status_lines = data.split('STATUS ')
+                
+                # Find the last complete STATUS line
+                for line in reversed(status_lines):
+                    if line.strip() and ',' in line:  # Make sure it has actual data
+                        return 'STATUS ' + line.strip().split('\n')[0]  # Take only first line
+            
             return data
+            
         except Exception as e:
             return f"ERROR {e}"
     
     def get_status(self) -> Dict:
-        """Get current status with better error handling"""
+        """Get current status - SIMPLIFIED"""
         try:
             response = self.send_command("STATUS")
-            print(f"🔍 Raw status response: '{response}'")  # Debug output
             
-            if response.startswith("STATUS "):
-                status_data = self._parse_status(response[7:])
-                print(f"🔍 Parsed status: {status_data}")  # Debug output
+            # Handle the response more robustly
+            if 'STATUS ' in response:
+                # Extract just the STATUS line
+                status_line = response
+                if response.count('STATUS ') > 1:
+                    # Multiple STATUS responses, take the first complete one
+                    lines = response.split('\n')
+                    for line in lines:
+                        if line.startswith('STATUS ') and ',' in line:
+                            status_line = line
+                            break
+                
+                # Parse the status
+                status_data = self._parse_status(status_line[7:])  # Remove "STATUS "
+                print(f"📊 Final parsed status: {status_data}")
                 return status_data
             else:
-                print(f"⚠️  Unexpected status response: '{response}'")
+                print(f"⚠️  No STATUS found in response: '{response[:100]}...'")
                 return {}
+                
         except Exception as e:
             print(f"❌ Status error: {e}")
             return {}
     
     def _parse_status(self, status_string: str) -> Dict:
-        """Parse status string into dictionary with better error handling"""
+        """Parse status string - SIMPLIFIED"""
         try:
-            print(f"🔍 Parsing status string: '{status_string}'")
+            # Take only the first line if there are multiple
+            first_line = status_string.split('\n')[0].strip()
             
-            pairs = status_string.split(',')
+            pairs = first_line.split(',')
             status_dict = {}
             
             for pair in pairs:
@@ -143,7 +168,6 @@ class ArduinoPIDController:
                             pass  # Keep as string
                     
                     status_dict[key] = value
-                    print(f"🔍   {key} = {value}")
             
             status_dict['timestamp'] = time.time()
             return status_dict
