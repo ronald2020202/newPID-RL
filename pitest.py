@@ -233,6 +233,7 @@ def create_dashboard_template():
         .button:hover { transform: translateY(-1px); }
         .button.danger { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
         .button.success { background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); }
+        .button.warning { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
         .status-indicator { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
         .status-indicator.connected { background: #22c55e; box-shadow: 0 0 10px rgba(34, 197, 94, 0.5); }
         .status-indicator.disconnected { background: #ef4444; }
@@ -266,6 +267,14 @@ def create_dashboard_template():
                 <input type="text" id="arduinoIP" placeholder="Arduino IP" value="192.168.0.224" style="width: 150px;">
                 <button class="button" onclick="connectArduino()" id="connectBtn">Connect</button>
                 <div id="lastUpdate" style="font-size: 0.8rem; color: #94a3b8;">Last: Never</div>
+            </div>
+            
+            <!-- TEST BUTTONS ADDED HERE -->
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(59, 130, 246, 0.2);">
+                <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 10px;">🧪 Debug Tests:</div>
+                <button class="button warning" onclick="pingTest()">Ping Test</button>
+                <button class="button warning" onclick="requestStatus()">Request Status</button>
+                <button class="button warning" onclick="testUIDirectly()">Test UI Direct</button>
             </div>
         </div>
 
@@ -444,12 +453,58 @@ def create_dashboard_template():
             });
         }
 
-        // Socket events
+        // TEST FUNCTIONS ADDED HERE
+        function pingTest() {
+            console.log('🏓 Sending ping to server...');
+            logMessage('🏓 Sending ping to server...', 'command');
+            socket.emit('ping_test');
+        }
+
+        function requestStatus() {
+            console.log('📡 Requesting manual status update...');
+            logMessage('📡 Requesting manual status update...', 'command');
+            socket.emit('request_status');
+        }
+
+        function testUIDirectly() {
+            console.log('🧪 Testing UI update directly...');
+            logMessage('🧪 Testing UI update directly...', 'warning');
+            
+            // Directly set values and update UI
+            currentAngle = 123.4;
+            targetAngle = 90.0;
+            
+            document.getElementById('currentDegrees').textContent = '123.4°';
+            document.getElementById('targetDegrees').textContent = '90.0°';
+            document.getElementById('pidStatus').textContent = 'ON';
+            document.getElementById('connectionIndicator').className = 'status-indicator connected';
+            document.getElementById('connectionText').textContent = 'Connected (TEST)';
+            
+            updateChart();
+            updateDial();
+            
+            logMessage('🧪 UI updated directly - if you see changes, the UI works!', 'success');
+        }
+
+        // ENHANCED SOCKET EVENT HANDLERS
         socket.on('connect', () => {
-            logMessage('Connected to server');
+            console.log('🔌 WebSocket connected to server');
+            logMessage('🔌 WebSocket connected to server', 'success');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('🔌 WebSocket disconnected from server');
+            logMessage('🔌 WebSocket disconnected from server', 'error');
+        });
+
+        socket.on('pong_test', (data) => {
+            console.log('🏓 Pong received:', data);
+            logMessage(`🏓 Pong received: ${data.message}`, 'success');
         });
 
         socket.on('arduino_status', (data) => {
+            console.log('📊 RECEIVED arduino_status:', data);
+            logMessage(`📊 WebSocket status received: connected=${data.connected}, degrees=${data.degrees}`, 'info');
             updateStatus(data);
         });
 
@@ -459,6 +514,30 @@ def create_dashboard_template():
 
         socket.on('training_update', (data) => {
             updateTraining(data);
+        });
+
+        socket.on('training_complete', (data) => {
+            logMessage(`Training complete! Episodes: ${data.episodes_completed}, Best reward: ${data.best_reward.toFixed(2)}`, 'response');
+            
+            if (data.best_params) {
+                document.getElementById('kpValue').value = data.best_params.kp.toFixed(3);
+                document.getElementById('kiValue').value = data.best_params.ki.toFixed(3);
+                document.getElementById('kdValue').value = data.best_params.kd.toFixed(3);
+                
+                logMessage('Best parameters loaded into PID controls - click "Update PID" to apply', 'response');
+            }
+            
+            document.getElementById('trainingStatus').innerHTML = `
+                <div style="color: #22c55e;">Training Complete!</div>
+                <div style="font-size: 0.9rem; margin-top: 5px;">
+                    Best: Kp=${data.best_params.kp.toFixed(3)}, 
+                    Ki=${data.best_params.ki.toFixed(3)}, 
+                    Kd=${data.best_params.kd.toFixed(3)}
+                </div>
+                <div style="font-size: 0.8rem; margin-top: 5px;">
+                    Reward: ${data.best_reward.toFixed(2)}
+                </div>
+            `;
         });
 
         // Functions
@@ -487,7 +566,7 @@ def create_dashboard_template():
             sendCommand(`TARGET ${degrees}`);
         }
 
-        // Add keyboard event listener for emergency stop
+        // Emergency stop
         document.addEventListener('keydown', function(event) {
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
@@ -585,36 +664,9 @@ def create_dashboard_template():
             }
             
             if (data.best_params) {
-                // Update best parameters display (you can add this section to HTML if needed)
                 logMessage(`Best so far: Kp=${data.best_params.kp.toFixed(3)}, Ki=${data.best_params.ki.toFixed(3)}, Kd=${data.best_params.kd.toFixed(3)}`, 'response');
             }
         }
-
-        // Add training complete handler
-        socket.on('training_complete', (data) => {
-            logMessage(`Training complete! Episodes: ${data.episodes_completed}, Best reward: ${data.best_reward.toFixed(2)}`, 'response');
-            
-            if (data.best_params) {
-                // Auto-fill the PID form with best parameters
-                document.getElementById('kpValue').value = data.best_params.kp.toFixed(3);
-                document.getElementById('kiValue').value = data.best_params.ki.toFixed(3);
-                document.getElementById('kdValue').value = data.best_params.kd.toFixed(3);
-                
-                logMessage('Best parameters loaded into PID controls - click "Update PID" to apply', 'response');
-            }
-            
-            document.getElementById('trainingStatus').innerHTML = `
-                <div style="color: #22c55e;">Training Complete!</div>
-                <div style="font-size: 0.9rem; margin-top: 5px;">
-                    Best: Kp=${data.best_params.kp.toFixed(3)}, 
-                    Ki=${data.best_params.ki.toFixed(3)}, 
-                    Kd=${data.best_params.kd.toFixed(3)}
-                </div>
-                <div style="font-size: 0.8rem; margin-top: 5px;">
-                    Reward: ${data.best_reward.toFixed(2)}
-                </div>
-            `;
-        });
 
         function logMessage(message, type = 'info') {
             const log = document.getElementById('logContent');
@@ -656,6 +708,31 @@ def index():
 @socketio.on('connect')
 def handle_connect():
     emit('log_message', {'message': 'Web client connected', 'type': 'response'})
+    
+@socketio.on('ping_test')
+def handle_ping_test():
+    """Simple ping test"""
+    print("🏓 Ping received from web client")
+    emit('pong_test', {'message': 'Pong from server!', 'timestamp': time.time()})
+
+
+@socketio.on('request_status')
+def handle_request_status():
+    """Manually request status update"""
+    global arduino_controller
+    
+    print("📡 Manual status request from web client")
+    
+    if arduino_controller and arduino_controller.connected:
+        status = arduino_controller.get_status()
+        if status:
+            status['connected'] = True
+            print(f"📡 Sending manual status: {status}")
+            emit('arduino_status', status)
+        else:
+            emit('arduino_status', {'connected': False})
+    else:
+        emit('arduino_status', {'connected': False})
 
 @socketio.on('test_websocket')
 def handle_test_websocket():
@@ -767,7 +844,7 @@ def handle_stop_training():
     emit('log_message', {'message': 'Training stopped', 'type': 'warning'})
 
 def start_status_monitoring():
-    """Start status monitoring thread - FIXED to update visuals properly"""
+    """Start status monitoring thread - FIXED WebSocket emission"""
     global status_monitoring_active
     
     status_monitoring_active = True
@@ -787,11 +864,15 @@ def start_status_monitoring():
                     if status and len(status) > 1:  # Make sure we got real data
                         status['connected'] = True
                         
-                        # Debug: Print what we're sending to web interface
                         print(f"📊 Status update: degrees={status.get('degrees', 'N/A')}, target={status.get('target_degrees', 'N/A')}, pid={status.get('pid_enabled', 'N/A')}")
                         
-                        # Send to web interface
-                        socketio.emit('arduino_status', status)
+                        # FIXED: Use socketio.emit with broadcast=True to reach ALL clients
+                        try:
+                            socketio.emit('arduino_status', status, broadcast=True)
+                            print("✅ Status broadcast sent to all clients")
+                        except Exception as emit_error:
+                            print(f"❌ Failed to emit status: {emit_error}")
+                        
                         consecutive_failures = 0
                         
                     else:
@@ -801,11 +882,11 @@ def start_status_monitoring():
                         if consecutive_failures >= max_failures:
                             print("❌ Too many status failures, stopping monitoring")
                             status_monitoring_active = False
-                            socketio.emit('arduino_status', {'connected': False})
+                            socketio.emit('arduino_status', {'connected': False}, broadcast=True)
                             break
                 else:
                     print("❌ Arduino not connected, stopping monitoring")
-                    socketio.emit('arduino_status', {'connected': False})
+                    socketio.emit('arduino_status', {'connected': False}, broadcast=True)
                     break
                     
             except Exception as e:
@@ -814,11 +895,11 @@ def start_status_monitoring():
                 
                 if consecutive_failures >= max_failures:
                     status_monitoring_active = False
-                    socketio.emit('arduino_status', {'connected': False})
+                    socketio.emit('arduino_status', {'connected': False}, broadcast=True)
                     break
             
             # Wait between status checks
-            time.sleep(2.0)  # Slower updates to be more stable
+            time.sleep(2.0)
         
         print("🔍 Status monitoring thread stopped")
         status_monitoring_active = False
