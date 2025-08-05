@@ -633,6 +633,48 @@ def index():
 def handle_connect():
     emit('log_message', {'message': 'Web client connected', 'type': 'response'})
 
+@socketio.on('test_websocket')
+def handle_test_websocket():
+    """Test WebSocket communication"""
+    print("🧪 WebSocket test triggered from web interface")
+    
+    # Send a test status update
+    test_data = {
+        'connected': True,
+        'degrees': 123.4,
+        'target_degrees': 90.0,
+        'pid_enabled': True,
+        'ticks': 1234,
+        'error': -33.4,
+        'kp': 10.0,
+        'ki': 0.0,
+        'kd': 30.0
+    }
+    
+    print(f"🧪 Sending test data: {test_data}")
+    emit('arduino_status', test_data)
+    emit('log_message', {'message': 'WebSocket test - if you see this, WebSocket is working!', 'type': 'response'})
+
+@socketio.on('force_status_update')
+def handle_force_status():
+    """Force a status update"""
+    global arduino_controller
+    
+    if arduino_controller and arduino_controller.connected:
+        print("🔄 Forcing status update...")
+        status = arduino_controller.get_status()
+        
+        if status:
+            status['connected'] = True
+            print(f"🔄 Force sending: {status}")
+            emit('arduino_status', status)
+        else:
+            print("🔄 No status data received")
+            emit('arduino_status', {'connected': False})
+    else:
+        print("🔄 Arduino not connected")
+        emit('arduino_status', {'connected': False})
+
 @socketio.on('connect_arduino')
 def handle_arduino_connect(data):
     global arduino_controller, status_monitoring_active
