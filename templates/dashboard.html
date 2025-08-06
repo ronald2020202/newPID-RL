@@ -122,7 +122,7 @@
                 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
                     <div class="input-group">
                         <label>Kp</label>
-                        <input type="number" id="kpValue" step="0.1" value="10.0">
+                        <input type="number" id="kpValue" step="0.1" value="1.0">
                     </div>
                     <div class="input-group">
                         <label>Ki</label>
@@ -130,10 +130,35 @@
                     </div>
                     <div class="input-group">
                         <label>Kd</label>
-                        <input type="number" id="kdValue" step="0.1" value="30.0">
+                        <input type="number" id="kdValue" step="0.1" value="0.0">
                     </div>
                 </div>
-                <button class="button" onclick="updatePID()">Update PID</button>
+                
+                <!-- Baseline Section -->
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(59, 130, 246, 0.2);">
+                    <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 10px;">Baseline PID Values:</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                        <div class="input-group">
+                            <label style="font-size: 0.8rem;">Baseline Kp</label>
+                            <input type="number" id="baselineKp" step="0.1" value="1.0">
+                        </div>
+                        <div class="input-group">
+                            <label style="font-size: 0.8rem;">Baseline Ki</label>
+                            <input type="number" id="baselineKi" step="0.01" value="0.0">
+                        </div>
+                        <div class="input-group">
+                            <label style="font-size: 0.8rem;">Baseline Kd</label>
+                            <input type="number" id="baselineKd" step="0.1" value="0.0">
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="button" onclick="loadBaseline()" style="font-size: 0.8rem;">Load Baseline</button>
+                        <button class="button" onclick="saveAsBaseline()" style="font-size: 0.8rem;">Save as Baseline</button>
+                        <button class="button" onclick="resetToDefaults()" style="font-size: 0.8rem;">Reset to (1,0,0)</button>
+                    </div>
+                </div>
+                
+                <button class="button" onclick="updatePID()" style="margin-top: 15px;">Update PID</button>
                 <div style="margin-top: 10px;">
                     <button class="button success" onclick="sendCommand('PID_ON')">Enable</button>
                     <button class="button danger" onclick="sendCommand('PID_OFF')">Disable</button>
@@ -369,6 +394,43 @@
 
         function stopTraining() {
             socket.emit('stop_rl_training');
+        }
+        
+        // Baseline PID Functions
+        function loadBaseline() {
+            const kp = parseFloat(document.getElementById('baselineKp').value);
+            const ki = parseFloat(document.getElementById('baselineKi').value);
+            const kd = parseFloat(document.getElementById('baselineKd').value);
+            
+            document.getElementById('kpValue').value = kp;
+            document.getElementById('kiValue').value = ki;
+            document.getElementById('kdValue').value = kd;
+            
+            logMessage(`Loaded baseline: Kp=${kp}, Ki=${ki}, Kd=${kd}`, 'info');
+        }
+        
+        function saveAsBaseline() {
+            const kp = parseFloat(document.getElementById('kpValue').value);
+            const ki = parseFloat(document.getElementById('kiValue').value);
+            const kd = parseFloat(document.getElementById('kdValue').value);
+            
+            document.getElementById('baselineKp').value = kp;
+            document.getElementById('baselineKi').value = ki;
+            document.getElementById('baselineKd').value = kd;
+            
+            logMessage(`Saved as baseline: Kp=${kp}, Ki=${ki}, Kd=${kd}`, 'info');
+        }
+        
+        function resetToDefaults() {
+            document.getElementById('kpValue').value = 1.0;
+            document.getElementById('kiValue').value = 0.0;
+            document.getElementById('kdValue').value = 0.0;
+            
+            document.getElementById('baselineKp').value = 1.0;
+            document.getElementById('baselineKi').value = 0.0;
+            document.getElementById('baselineKd').value = 0.0;
+            
+            logMessage('Reset all PID values to defaults (1,0,0)', 'info');
         }
 
         function updateStatus(data) {

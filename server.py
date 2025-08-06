@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Fixed Flask backend for PID Controller Dashboard
-This version handles connection issues more robustly
+PID Controller Dashboard Backend
+Flask server for motor control and monitoring
 """
 
 from flask import Flask, jsonify, request
@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ArduinoPIDController:
-    def __init__(self, arduino_ip: str, arduino_port: int = 80, timeout: float = 5.0):
+    def __init__(self, arduino_ip: str, arduino_port: int = 80, timeout: float = 3.0):
         self.arduino_ip = arduino_ip
         self.arduino_port = arduino_port
         self.timeout = timeout
@@ -32,165 +32,109 @@ class ArduinoPIDController:
         self.status_data = {}
         self.running = True
         self.last_heartbeat = 0
-        self.connection_lock = threading.Lock()
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 3
         
     def connect(self) -> bool:
-        """Connect to Arduino over WiFi with better error handling"""
-        with self.connection_lock:
-            try:
-                # Clean up any existing socket
-                if self.socket:
-                    try:
-                        self.socket.close()
-                    except:
-                        pass
-                    self.socket = None
-                
-                logger.info(f"Attempting to connect to Arduino at {self.arduino_ip}:{self.arduino_port}")
-                
-                # Create new socket with proper configuration
-                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.socket.settimeout(self.timeout)
-                
-                # Enable keep-alive to detect dead connections
-                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                
-                # Connect to Arduino
-                self.socket.connect((self.arduino_ip, self.arduino_port))
-                
-                # Wait for connection message with timeout
-                self.socket.settimeout(3.0)  # Shorter timeout for initial response
-                try:
-                    response = self._read_response()
-                    logger.info(f"Arduino connection response: {response}")
-                except socket.timeout:
-                    logger.warning("No response from Arduino, but connection established")
-                    response = "Connected (no response)"
-                
-                # Set longer timeout for normal operations
-                self.socket.settimeout(self.timeout)
-                
-                self.connected = True
-                self.last_heartbeat = time.time()
-                self.reconnect_attempts = 0
-                
-                logger.info("Successfully connected to Arduino")
-                return True
-                
-            except Exception as e:
-                logger.error(f"Failed to connect to Arduino: {e}")
-                self.connected = False
-                if self.socket:
-                    try:
-                        self.socket.close()
-                    except:
-                        pass
-                    self.socket = None
-                return False
-    
-    def disconnect(self):
-        """Disconnect from Arduino"""
-        with self.connection_lock:
-            self.running = False
-            self.connected = False
-            
+        """Connect to Arduino over WiFi"""
+        try:
             if self.socket:
                 try:
                     self.socket.close()
                 except:
                     pass
-                self.socket = None
             
-            logger.info("Disconnected from Arduino")
-    
-    def send_command(self, command: str) -> str:
-        """Send command to Arduino and return response with better error handling"""
-        with self.connection_lock:
-            if not self.connected or not self.socket:
-                return "ERROR Not connected"
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(self.timeout)
+            self.socket.connect((self.arduino_ip, self.arduino_port))
             
-            try:
-                # Send command
-                message = (command + '\n').encode('utf-8')
-                self.socket.send(message)
-                
-                # Read response with timeout
-                response = self._read_response()
-                self.last_heartbeat = time.time()
-                
-                return response
-                
-            except socket.timeout:
-                logger.error("Command timeout")
-                self._handle_connection_error()
-                return "ERROR Timeout"
-            except Exception as e:
-                logger.error(f"Error sending command '{command}': {e}")
-                self._handle_connection_error()
-                return f"ERROR {e}"
-    
-    def _read_response(self) -> str:
-        """Read response from Arduino with better error handling"""
-        try:
-            # Read data in chunks to handle partial responses
-            data = b""
-            start_time = time.time()
+            response = self._read_response()
+            logger.info(f"Arduino connection response: {response}")
             
-            while time.time() - start_time < self.timeout:
-                try:
-                    chunk = self.socket.recv(1024)
-                    if not chunk:
-                        break
-                    data += chunk
-                    if b'\n' in data:
-                        break
-                except socket.timeout:
-                    break
+            self.connected = True
+            self.last_heartbeat = time.time()
+            return True
             
-            if data:
-                response = data.decode('utf-8', errors='ignore').strip()
-                return response
-            else:
-                return "ERROR No response"
-                
         except Exception as e:
-            return f"ERROR {e}"
+            logger.error(f"Failed to connect to Arduino: {e}")
+            self.connected = False
+            return False
     
-    def _handle_connection_error(self):
-        """Handle connection errors"""
+    def disconnect(self):
+        """Disconnect from Arduino"""
+        self.running = False
         self.connected = False
+        
         if self.socket:
             try:
                 self.socket.close()
             except:
                 pass
-            self.socket = None
+        
+        logger.info("Disconnected from Arduino")
     
-    def get_status(self) -> Dict:
-        """Get current status with error handling"""
+    def send_command(self, command: str) -> str:
+        """Send command to Arduino and return response"""
         if not self.connected:
-            return {'connected': False}
+            return "ERROR Not connected"
         
         try:
-            response = self.send_command("STATUS")
-            if response.startswith("STATUS "):
-                status = self._parse_status(response[7:])
-                status['connected'] = True
-                return status
-            elif response.startswith("ERROR"):
-                return {'connected': False, 'error': response}
-            else:
-                return {'connected': True, 'raw_response': response}
+            self.socket.send((command + '\n').encode('utf-8'))
+            response = self._read_response()
+            self.last_heartbeat = time.time()
+            return response
+            
         except Exception as e:
-            logger.error(f"Error getting status: {e}")
-            return {'connected': False, 'error': str(e)}
+            logger.error(f"Error sending command: {e}")
+            self.connected = False
+            return f"ERROR {e}"
+    
+    def _read_response(self) -> str:
+        """Read response from Arduino"""
+        try:
+            data = self.socket.recv(4096).decode('utf-8', errors='ignore').strip()
+            
+            if 'STATUS ' in data:
+                status_lines = data.split('STATUS ')
+                
+                for line in reversed(status_lines):
+                    if line.strip() and ',' in line:
+                        return 'STATUS ' + line.strip().split('\n')[0]
+            
+            return data
+            
+        except Exception as e:
+            return f"ERROR {e}"
+    
+    def get_status(self) -> Dict:
+        """Get current status"""
+        try:
+            response = self.send_command("STATUS")
+            
+            if 'STATUS ' in response:
+                status_line = response
+                if response.count('STATUS ') > 1:
+                    lines = response.split('\n')
+                    for line in lines:
+                        if line.startswith('STATUS ') and ',' in line:
+                            status_line = line
+                            break
+                
+                status_data = self._parse_status(status_line[7:])
+                logger.info(f"Final parsed status: {status_data}")
+                return status_data
+            else:
+                logger.warning(f"No STATUS found in response: '{response[:100]}...'")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Status error: {e}")
+            return {}
     
     def _parse_status(self, status_string: str) -> Dict:
-        """Parse status string into dictionary"""
+        """Parse status string"""
         try:
-            pairs = status_string.split(',')
+            first_line = status_string.split('\n')[0].strip()
+            
+            pairs = first_line.split(',')
             status_dict = {}
             
             for pair in pairs:
@@ -199,7 +143,6 @@ class ArduinoPIDController:
                     key = key.strip()
                     value = value.strip()
                     
-                    # Convert values
                     if value.lower() == 'true':
                         value = True
                     elif value.lower() == 'false':
@@ -211,7 +154,7 @@ class ArduinoPIDController:
                             else:
                                 value = int(value)
                         except ValueError:
-                            pass  # Keep as string
+                            pass
                     
                     status_dict[key] = value
             
@@ -219,23 +162,41 @@ class ArduinoPIDController:
             return status_dict
             
         except Exception as e:
-            logger.error(f"Error parsing status: {e}")
-            return {'parse_error': str(e)}
+            logger.error(f"Status parsing error: {e}")
+            return {}
     
     def is_healthy(self) -> bool:
         """Check if connection is healthy"""
-        return self.connected and (time.time() - self.last_heartbeat < 15.0)
+        return self.connected and (time.time() - self.last_heartbeat < 10.0)
 
 # Flask app setup
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'pid-controller-secret-key'
-socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Global variables
 arduino_controller = None
 training_active = False
-status_thread = None
-status_thread_running = False
+training_data = {
+    'active': False,
+    'episode': 0,
+    'total_episodes': 0,
+    'best_reward': -float('inf'),
+    'best_params': None,
+    'completed': False
+}
+status_monitoring_active = False
+
+def get_local_ip():
+    """Get local IP address"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "localhost"
 
 def create_dashboard_template():
     """Create the dashboard template file"""
@@ -261,6 +222,7 @@ def create_dashboard_template():
         .button:hover { transform: translateY(-1px); }
         .button.danger { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
         .button.success { background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); }
+        .button.warning { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
         .status-indicator { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
         .status-indicator.connected { background: #22c55e; box-shadow: 0 0 10px rgba(34, 197, 94, 0.5); }
         .status-indicator.disconnected { background: #ef4444; }
@@ -291,10 +253,16 @@ def create_dashboard_template():
             <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
                 <div class="status-indicator disconnected" id="connectionIndicator"></div>
                 <span id="connectionText">Disconnected</span>
-                <input type="text" id="arduinoIP" placeholder="Arduino IP" value="192.168.1.100" style="width: 150px;">
+                <input type="text" id="arduinoIP" placeholder="Arduino IP" value="192.168.0.224" style="width: 150px;">
                 <button class="button" onclick="connectArduino()" id="connectBtn">Connect</button>
-                <button class="button danger" onclick="disconnectArduino()" id="disconnectBtn">Disconnect</button>
                 <div id="lastUpdate" style="font-size: 0.8rem; color: #94a3b8;">Last: Never</div>
+            </div>
+            
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(59, 130, 246, 0.2);">
+                <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 10px;">Debug Tests:</div>
+                <button class="button warning" onclick="pingTest()">Ping Test</button>
+                <button class="button warning" onclick="requestStatus()">Request Status</button>
+                <button class="button warning" onclick="testUIDirectly()">Test UI Direct</button>
             </div>
         </div>
 
@@ -304,11 +272,11 @@ def create_dashboard_template():
                 <div class="card-title">System Status</div>
                 <div class="status-grid">
                     <div class="status-item">
-                        <div class="status-value" id="currentDegrees">0.0°</div>
+                        <div class="status-value" id="currentDegrees">0.0&deg;</div>
                         <div class="status-label">Current Position</div>
                     </div>
                     <div class="status-item">
-                        <div class="status-value" id="targetDegrees">0.0°</div>
+                        <div class="status-value" id="targetDegrees">0.0&deg;</div>
                         <div class="status-label">Target Position</div>
                     </div>
                     <div class="status-item">
@@ -327,7 +295,7 @@ def create_dashboard_template():
                 <div class="card-title">Manual Control</div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
                     <button class="button success" onclick="sendCommand('FORWARD')">Forward</button>
-                    <button class="button danger" onclick="sendCommand('STOP')">STOP</button>
+                    <button class="button danger" onclick="sendCommand('STOP')">Stop</button>
                     <button class="button" onclick="sendCommand('REVERSE')">Reverse</button>
                     <button class="button" onclick="sendCommand('ZERO')">Zero</button>
                 </div>
@@ -340,10 +308,10 @@ def create_dashboard_template():
                 <div class="input-group">
                     <label>Quick Targets</label>
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 5px;">
-                        <button class="button" onclick="setQuickTarget(0)">0°</button>
-                        <button class="button" onclick="setQuickTarget(90)">90°</button>
-                        <button class="button" onclick="setQuickTarget(180)">180°</button>
-                        <button class="button" onclick="setQuickTarget(270)">270°</button>
+                        <button class="button" onclick="setQuickTarget(0)">0&deg;</button>
+                        <button class="button" onclick="setQuickTarget(90)">90&deg;</button>
+                        <button class="button" onclick="setQuickTarget(180)">180&deg;</button>
+                        <button class="button" onclick="setQuickTarget(270)">270&deg;</button>
                     </div>
                 </div>
                 
@@ -358,7 +326,7 @@ def create_dashboard_template():
                 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
                     <div class="input-group">
                         <label>Kp</label>
-                        <input type="number" id="kpValue" step="0.1" value="10.0">
+                        <input type="number" id="kpValue" step="0.1" value="1.0">
                     </div>
                     <div class="input-group">
                         <label>Ki</label>
@@ -366,7 +334,7 @@ def create_dashboard_template():
                     </div>
                     <div class="input-group">
                         <label>Kd</label>
-                        <input type="number" id="kdValue" step="0.1" value="30.0">
+                        <input type="number" id="kdValue" step="0.1" value="0.0">
                     </div>
                 </div>
                 <button class="button" onclick="updatePID()">Update PID</button>
@@ -388,8 +356,8 @@ def create_dashboard_template():
                         <div class="dial-center"></div>
                     </div>
                     <div style="margin-top: 15px;">
-                        Current: <span id="dialCurrent">0.0°</span><br>
-                        Target: <span id="dialTargetText">0.0°</span>
+                        Current: <span id="dialCurrent">0.0&deg;</span><br>
+                        Target: <span id="dialTargetText">0.0&deg;</span>
                     </div>
                 </div>
                 <div class="chart-container">
@@ -432,17 +400,13 @@ def create_dashboard_template():
     </div>
 
     <script>
-        const socket = io({
-            pingTimeout: 60000,
-            pingInterval: 25000
-        });
+        const socket = io();
         let connected = false;
         let positionChart;
         let chartData = [];
         let currentAngle = 0;
         let targetAngle = 0;
 
-        // Initialize chart
         function initChart() {
             const ctx = document.getElementById('positionChart').getContext('2d');
             positionChart = new Chart(ctx, {
@@ -476,12 +440,55 @@ def create_dashboard_template():
             });
         }
 
-        // Socket events
+        function pingTest() {
+            console.log('Sending ping to server...');
+            logMessage('Sending ping to server...', 'command');
+            socket.emit('ping_test');
+        }
+
+        function requestStatus() {
+            console.log('Requesting manual status update...');
+            logMessage('Requesting manual status update...', 'command');
+            socket.emit('request_status');
+        }
+
+        function testUIDirectly() {
+            console.log('Testing UI update directly...');
+            logMessage('Testing UI update directly...', 'warning');
+            
+            currentAngle = 123.4;
+            targetAngle = 90.0;
+            
+            document.getElementById('currentDegrees').textContent = '123.4°';
+            document.getElementById('targetDegrees').textContent = '90.0°';
+            document.getElementById('pidStatus').textContent = 'ON';
+            document.getElementById('connectionIndicator').className = 'status-indicator connected';
+            document.getElementById('connectionText').textContent = 'Connected (TEST)';
+            
+            updateChart();
+            updateDial();
+            
+            logMessage('UI updated directly - if you see changes, the UI works!', 'success');
+        }
+
         socket.on('connect', () => {
-            logMessage('Connected to server');
+            console.log('WebSocket connected to server');
+            logMessage('WebSocket connected to server', 'success');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('WebSocket disconnected from server');
+            logMessage('WebSocket disconnected from server', 'error');
+        });
+
+        socket.on('pong_test', (data) => {
+            console.log('Pong received:', data);
+            logMessage('Pong received: ' + data.message, 'success');
         });
 
         socket.on('arduino_status', (data) => {
+            console.log('RECEIVED arduino_status:', data);
+            logMessage('WebSocket status received: connected=' + data.connected + ', degrees=' + data.degrees, 'info');
             updateStatus(data);
         });
 
@@ -493,14 +500,33 @@ def create_dashboard_template():
             updateTraining(data);
         });
 
-        // Functions
+        socket.on('training_complete', (data) => {
+            logMessage('Training complete! Episodes: ' + data.episodes_completed + ', Best reward: ' + data.best_reward.toFixed(2), 'response');
+            
+            if (data.best_params) {
+                document.getElementById('kpValue').value = data.best_params.kp.toFixed(3);
+                document.getElementById('kiValue').value = data.best_params.ki.toFixed(3);
+                document.getElementById('kdValue').value = data.best_params.kd.toFixed(3);
+                
+                logMessage('Best parameters loaded into PID controls - click "Update PID" to apply', 'response');
+            }
+            
+            document.getElementById('trainingStatus').innerHTML = `
+                <div style="color: #22c55e;">Training Complete!</div>
+                <div style="font-size: 0.9rem; margin-top: 5px;">
+                    Best: Kp=${data.best_params.kp.toFixed(3)}, 
+                    Ki=${data.best_params.ki.toFixed(3)}, 
+                    Kd=${data.best_params.kd.toFixed(3)}
+                </div>
+                <div style="font-size: 0.8rem; margin-top: 5px;">
+                    Reward: ${data.best_reward.toFixed(2)}
+                </div>
+            `;
+        });
+
         function connectArduino() {
             const ip = document.getElementById('arduinoIP').value;
             socket.emit('connect_arduino', {ip: ip});
-        }
-
-        function disconnectArduino() {
-            socket.emit('disconnect_arduino');
         }
 
         function sendCommand(command) {
@@ -511,19 +537,18 @@ def create_dashboard_template():
             const kp = document.getElementById('kpValue').value;
             const ki = document.getElementById('kiValue').value;
             const kd = document.getElementById('kdValue').value;
-            sendCommand(`PID ${kp} ${ki} ${kd}`);
+            sendCommand('PID ' + kp + ' ' + ki + ' ' + kd);
         }
 
         function setTarget() {
             const target = parseFloat(document.getElementById('targetInput').value);
-            sendCommand(`TARGET ${target}`);
+            sendCommand('TARGET ' + target);
         }
 
         function setQuickTarget(degrees) {
-            sendCommand(`TARGET ${degrees}`);
+            sendCommand('TARGET ' + degrees);
         }
 
-        // Emergency stop
         document.addEventListener('keydown', function(event) {
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
@@ -562,7 +587,6 @@ def create_dashboard_template():
                 indicator.className = 'status-indicator connected';
                 text.textContent = 'Connected';
                 
-                // Update displays
                 currentAngle = data.degrees || 0;
                 targetAngle = data.target_degrees || 0;
                 
@@ -619,31 +643,11 @@ def create_dashboard_template():
                     </div>
                 `;
             }
-        }
-
-        socket.on('training_complete', (data) => {
-            logMessage(`Training complete! Episodes: ${data.episodes_completed}, Best reward: ${data.best_reward.toFixed(2)}`, 'response');
             
             if (data.best_params) {
-                document.getElementById('kpValue').value = data.best_params.kp.toFixed(3);
-                document.getElementById('kiValue').value = data.best_params.ki.toFixed(3);
-                document.getElementById('kdValue').value = data.best_params.kd.toFixed(3);
-                
-                logMessage('Best parameters loaded into PID controls - click "Update PID" to apply', 'response');
+                logMessage('Best so far: Kp=' + data.best_params.kp.toFixed(3) + ', Ki=' + data.best_params.ki.toFixed(3) + ', Kd=' + data.best_params.kd.toFixed(3), 'response');
             }
-            
-            document.getElementById('trainingStatus').innerHTML = `
-                <div style="color: #22c55e;">Training Complete!</div>
-                <div style="font-size: 0.9rem; margin-top: 5px;">
-                    Best: Kp=${data.best_params.kp.toFixed(3)}, 
-                    Ki=${data.best_params.ki.toFixed(3)}, 
-                    Kd=${data.best_params.kd.toFixed(3)}
-                </div>
-                <div style="font-size: 0.8rem; margin-top: 5px;">
-                    Reward: ${data.best_reward.toFixed(2)}
-                </div>
-            `;
-        });
+        }
 
         function logMessage(message, type = 'info') {
             const log = document.getElementById('logContent');
@@ -654,11 +658,10 @@ def create_dashboard_template():
             };
             const color = colors[type] || '#cbd5e1';
             
-            log.innerHTML += `<div style="color: ${color};">[${timestamp}] ${message}</div>`;
+            log.innerHTML += '<div style="color: ' + color + ';">[' + timestamp + '] ' + message + '</div>';
             log.scrollTop = log.scrollHeight;
         }
 
-        // Initialize
         window.onload = function() {
             initChart();
             logMessage('Dashboard ready');
@@ -667,43 +670,103 @@ def create_dashboard_template():
 </body>
 </html>'''
     
-    with open('templates/dashboard.html', 'w') as f:
+    with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
+
+@app.after_request
+def add_header(response):
+    response.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return response
 
 @app.route('/')
 def index():
     """Serve the dashboard"""
     try:
-        with open('templates/dashboard.html', 'r') as f:
+        with open('templates/dashboard.html', 'r', encoding='utf-8') as f:
             return f.read()
     except FileNotFoundError:
         create_dashboard_template()
-        with open('templates/dashboard.html', 'r') as f:
+        with open('templates/dashboard.html', 'r', encoding='utf-8') as f:
             return f.read()
 
-# WebSocket handlers
 @socketio.on('connect')
 def handle_connect():
     emit('log_message', {'message': 'Web client connected', 'type': 'response'})
+    
+@socketio.on('ping_test')
+def handle_ping_test():
+    print("Ping received from web client")
+    emit('pong_test', {'message': 'Pong from server!', 'timestamp': time.time()})
+
+@socketio.on('request_status')
+def handle_request_status():
+    global arduino_controller
+    
+    print("Manual status request from web client")
+    
+    if arduino_controller and arduino_controller.connected:
+        status = arduino_controller.get_status()
+        if status:
+            status['connected'] = True
+            print(f"Sending manual status: {status}")
+            emit('arduino_status', status)
+        else:
+            emit('arduino_status', {'connected': False})
+    else:
+        emit('arduino_status', {'connected': False})
+
+@socketio.on('test_websocket')
+def handle_test_websocket():
+    print("WebSocket test triggered from web interface")
+    
+    test_data = {
+        'connected': True,
+        'degrees': 123.4,
+        'target_degrees': 90.0,
+        'pid_enabled': True,
+        'ticks': 1234,
+        'error': -33.4,
+        'kp': 10.0,
+        'ki': 0.0,
+        'kd': 30.0
+    }
+    
+    print(f"Sending test data: {test_data}")
+    emit('arduino_status', test_data)
+    emit('log_message', {'message': 'WebSocket test - if you see this, WebSocket is working!', 'type': 'response'})
+
+@socketio.on('force_status_update')
+def handle_force_status():
+    global arduino_controller
+    
+    if arduino_controller and arduino_controller.connected:
+        print("Forcing status update...")
+        status = arduino_controller.get_status()
+        
+        if status:
+            status['connected'] = True
+            print(f"Force sending: {status}")
+            emit('arduino_status', status)
+        else:
+            print("No status data received")
+            emit('arduino_status', {'connected': False})
+    else:
+        print("Arduino not connected")
+        emit('arduino_status', {'connected': False})
 
 @socketio.on('connect_arduino')
 def handle_arduino_connect(data):
-    global arduino_controller, status_thread, status_thread_running
+    global arduino_controller, status_monitoring_active
     
-    arduino_ip = data.get('ip', '192.168.1.100')
+    arduino_ip = data.get('ip', '192.168.0.224')
     
     try:
-        # Stop existing monitoring
-        if status_thread_running:
-            status_thread_running = False
-            if status_thread:
-                status_thread.join(timeout=2)
+        status_monitoring_active = False
+        time.sleep(0.5)
         
-        # Disconnect existing controller
         if arduino_controller:
             arduino_controller.disconnect()
         
-        # Create new controller
         arduino_controller = ArduinoPIDController(arduino_ip)
         
         if arduino_controller.connect():
@@ -714,19 +777,6 @@ def handle_arduino_connect(data):
             
     except Exception as e:
         emit('log_message', {'message': f'Connection error: {str(e)}', 'type': 'error'})
-
-@socketio.on('disconnect_arduino')
-def handle_arduino_disconnect():
-    global arduino_controller, status_thread_running
-    
-    try:
-        status_thread_running = False
-        if arduino_controller:
-            arduino_controller.disconnect()
-            arduino_controller = None
-        emit('log_message', {'message': 'Disconnected from Arduino', 'type': 'response'})
-    except Exception as e:
-        emit('log_message', {'message': f'Disconnect error: {str(e)}', 'type': 'error'})
 
 @socketio.on('send_command')
 def handle_send_command(data):
@@ -760,7 +810,6 @@ def handle_start_training(data):
     training_active = True
     emit('log_message', {'message': f'Starting RL training: {episodes} episodes', 'type': 'command'})
     
-    # Start training thread
     training_thread = threading.Thread(target=run_training, args=(episodes, duration, target), daemon=True)
     training_thread.start()
 
@@ -771,208 +820,158 @@ def handle_stop_training():
     emit('log_message', {'message': 'Training stopped', 'type': 'warning'})
 
 def start_status_monitoring():
-    """Start status monitoring thread with better error handling"""
-    global status_thread, status_thread_running
+    """Start status monitoring thread"""
+    global status_monitoring_active
     
-    status_thread_running = True
+    status_monitoring_active = True
+    print("Starting status monitoring thread...")
     
     def monitor():
-        global status_thread_running
-        
-        logger.info("Status monitoring thread started")
+        global status_monitoring_active
         consecutive_failures = 0
         max_failures = 5
         
-        while status_thread_running and arduino_controller:
+        while status_monitoring_active and arduino_controller:
             try:
                 if arduino_controller.connected:
                     status = arduino_controller.get_status()
                     
-                    if status and status.get('connected', False):
-                        socketio.emit('arduino_status', status)
-                        consecutive_failures = 0  # Reset failure counter
+                    if status and len(status) > 1:
+                        status['connected'] = True
+                        
+                        print(f"Status update: degrees={status.get('degrees', 'N/A')}, target={status.get('target_degrees', 'N/A')}, pid={status.get('pid_enabled', 'N/A')}")
+                        
+                        try:
+                            socketio.emit('arduino_status', status)
+                            print("Status sent to clients")
+                        except Exception as emit_error:
+                            print(f"Failed to emit status: {emit_error}")
+                        
+                        consecutive_failures = 0
+                        
                     else:
                         consecutive_failures += 1
-                        logger.warning(f"Status check failed ({consecutive_failures}/{max_failures})")
+                        print(f"Empty status response ({consecutive_failures}/{max_failures})")
                         
                         if consecutive_failures >= max_failures:
-                            logger.error("Too many consecutive failures, marking as disconnected")
+                            print("Too many status failures, stopping monitoring")
+                            status_monitoring_active = False
                             socketio.emit('arduino_status', {'connected': False})
-                            arduino_controller.connected = False
                             break
                 else:
+                    print("Arduino not connected, stopping monitoring")
                     socketio.emit('arduino_status', {'connected': False})
                     break
                     
             except Exception as e:
-                logger.error(f"Status monitoring error: {e}")
                 consecutive_failures += 1
+                print(f"Status monitoring error ({consecutive_failures}/{max_failures}): {e}")
                 
                 if consecutive_failures >= max_failures:
+                    status_monitoring_active = False
                     socketio.emit('arduino_status', {'connected': False})
                     break
             
-            # Wait before next status check
-            for _ in range(20):  # Check every 0.05s for 1 second total
-                if not status_thread_running:
-                    break
-                time.sleep(0.05)
+            time.sleep(2.0)
         
-        logger.info("Status monitoring thread stopped")
-        status_thread_running = False
+        print("Status monitoring thread stopped")
+        status_monitoring_active = False
     
-    status_thread = threading.Thread(target=monitor, daemon=True)
-    status_thread.start()
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
 
 def run_training(episodes, duration, target):
-    """Run RL training with better error handling"""
+    """Run RL training"""
     global training_active, arduino_controller
     
     best_reward = -float('inf')
     best_params = None
-    episodes_completed = 0
     
-    try:
-        for episode in range(episodes):
-            if not training_active:
-                break
-            
-            # Generate random parameters
-            kp = np.random.uniform(1, 20)
-            ki = np.random.uniform(0, 2)
-            kd = np.random.uniform(5, 50)
-            
-            # Update display
-            socketio.emit('training_update', {
-                'episode': episode + 1,
-                'total_episodes': episodes,
-                'current_params': {'kp': kp, 'ki': ki, 'kd': kd},
-                'best_reward': best_reward,
-                'best_params': best_params
-            })
-            
-            # Test parameters
-            reward = test_parameters(kp, ki, kd, target, duration)
-            
-            if reward > best_reward:
-                best_reward = reward
-                best_params = {'kp': kp, 'ki': ki, 'kd': kd}
-                socketio.emit('log_message', {
-                    'message': f'New best reward: {reward:.2f} (Kp={kp:.2f}, Ki={ki:.2f}, Kd={kd:.2f})',
-                    'type': 'response'
-                })
-            
-            episodes_completed += 1
-            
-            # Brief pause between episodes
-            time.sleep(0.5)
+    for episode in range(episodes):
+        if not training_active:
+            break
         
-    except Exception as e:
-        logger.error(f"Training error: {e}")
-        socketio.emit('log_message', {'message': f'Training error: {str(e)}', 'type': 'error'})
-    
-    finally:
-        training_active = False
+        kp = np.random.uniform(1, 20)
+        ki = np.random.uniform(0, 2)
+        kd = np.random.uniform(5, 50)
         
-        # Send completion event
-        socketio.emit('training_complete', {
-            'episodes_completed': episodes_completed,
+        reward = test_parameters(kp, ki, kd, target, duration)
+        
+        if reward > best_reward:
+            best_reward = reward
+            best_params = {'kp': kp, 'ki': ki, 'kd': kd}
+        
+        socketio.emit('training_update', {
+            'episode': episode + 1,
             'best_reward': best_reward,
             'best_params': best_params
         })
         
-        socketio.emit('log_message', {
-            'message': f'Training complete! Best: Kp={best_params["kp"]:.3f}, Ki={best_params["ki"]:.3f}, Kd={best_params["kd"]:.3f}, Reward={best_reward:.2f}',
-            'type': 'response'
-        })
+        time.sleep(1)
+    
+    training_active = False
+    socketio.emit('log_message', {
+        'message': f'Training complete! Best: Kp={best_params["kp"]:.2f}, Ki={best_params["ki"]:.2f}, Kd={best_params["kd"]:.2f}',
+        'type': 'response'
+    })
 
 def test_parameters(kp, ki, kd, target, duration):
-    """Test PID parameters and return reward with better error handling"""
+    """Test PID parameters and return reward"""
     try:
-        if not arduino_controller or not arduino_controller.connected:
-            return 0
-        
-        # Reset system
         arduino_controller.send_command('PID_OFF')
-        time.sleep(0.3)
+        time.sleep(0.2)
         arduino_controller.send_command('ZERO')
         time.sleep(0.5)
         
-        # Set parameters
-        pid_response = arduino_controller.send_command(f'PID {kp:.3f} {ki:.3f} {kd:.3f}')
-        if pid_response.startswith('ERROR'):
-            logger.warning(f"PID command failed: {pid_response}")
-            return 0
-        
-        target_response = arduino_controller.send_command(f'TARGET {target}')
-        if target_response.startswith('ERROR'):
-            logger.warning(f"TARGET command failed: {target_response}")
-            return 0
-        
+        arduino_controller.send_command(f'PID {kp} {ki} {kd}')
+        arduino_controller.send_command(f'TARGET {target}')
         arduino_controller.send_command('PID_ON')
         
-        # Collect data
         start_time = time.time()
         errors = []
         
         while time.time() - start_time < duration:
             status = arduino_controller.get_status()
-            
-            if status and status.get('connected', False):
-                error = abs(status.get('error', 180))  # Default to max error if not available
-                errors.append(error)
-            else:
-                # Connection lost during test
-                return 0
-            
+            error = abs(status.get('error', 0))
+            errors.append(error)
             time.sleep(0.1)
         
-        # Stop PID
         arduino_controller.send_command('PID_OFF')
-        arduino_controller.send_command('STOP')
         
-        # Calculate reward
         if errors:
             mean_error = np.mean(errors)
-            final_error = errors[-5:] if len(errors) >= 5 else errors  # Last few samples
-            stability = np.std(final_error) if len(final_error) > 1 else mean_error
-            
-            # Reward based on accuracy and stability
-            accuracy_reward = max(0, 100 - mean_error)
-            stability_reward = max(0, 50 - stability)
-            
-            total_reward = accuracy_reward + stability_reward
-            
-            socketio.emit('training_update', {
-                'current_reward': total_reward,
-                'current_params': {'kp': kp, 'ki': ki, 'kd': kd}
-            })
-            
-            return total_reward
+            reward = max(0, 100 - mean_error)
         else:
-            return 0
+            reward = 0
+        
+        return reward
         
     except Exception as e:
         logger.error(f"Parameter test error: {e}")
-        arduino_controller.send_command('PID_OFF')
-        arduino_controller.send_command('STOP')
         return 0
 
 if __name__ == '__main__':
-    print("=== Fixed PID Controller Web Server ===")
-    print("Creating dashboard template...")
-    create_dashboard_template()
-    print("Dashboard template created!")
+    print("=" * 60)
+    print("PID CONTROLLER WEB SERVER")
+    print("=" * 60)
+    
+    local_ip = get_local_ip()
+    
+    print("Loading dashboard template from templates/dashboard.html")
     print()
-    print("Starting server on http://localhost:5000")
+    print(f"Starting server...")
+    print(f"   Local:    http://localhost:5000")
+    print(f"   Network:  http://{local_ip}:5000")
+    print()
+    print("System features:")
+    print("   • PID motor control")
+    print("   • Real-time position tracking") 
+    print("   • Manual motor controls")
+    print("   • Reinforcement learning training")
+    print("   • Connection stability improved")
+    print()
     print("Required: pip install flask flask-socketio numpy")
-    print()
-    print("Connection improvements:")
-    print("- Better socket timeout handling")
-    print("- Connection state management")
-    print("- Graceful disconnection")
-    print("- Status monitoring with failure detection")
-    print()
+    print("=" * 60)
     
     try:
         socketio.run(app, host='0.0.0.0', port=5000, debug=False)
