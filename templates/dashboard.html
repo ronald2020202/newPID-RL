@@ -34,6 +34,19 @@
         .dial-center { position: absolute; top: 50%; left: 50%; width: 12px; height: 12px; background: #60a5fa; border-radius: 50%; transform: translate(-50%, -50%); }
         .dial-target { position: absolute; top: 50%; left: 50%; width: 2px; height: 50px; background: #ef4444; transform-origin: bottom center; transform: translate(-50%, -100%) rotate(0deg); }
         .log-container { background: rgba(15, 23, 42, 0.8); border-radius: 10px; padding: 15px; height: 250px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; }
+        .slider-group { margin-bottom: 15px; }
+        .slider { width: 100%; margin: 10px 0; }
+        .slider-value { font-weight: bold; color: #60a5fa; font-family: monospace; }
+        .reward-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .modal-content { background: #1e293b; margin: 5% auto; padding: 30px; border-radius: 15px; width: 80%; max-width: 600px; border: 1px solid rgba(59, 130, 246, 0.2); }
+        .close { color: #94a3b8; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover { color: #60a5fa; }
+        .tabs { display: flex; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; cursor: pointer; background: rgba(15, 23, 42, 0.5); margin-right: 5px; border-radius: 5px; }
+        .tab.active { background: #3b82f6; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
     </style>
 </head>
 <body>
@@ -168,8 +181,8 @@
 
         <!-- Visualization -->
         <div class="card">
-            <div class="card-title">Position Visualization</div>
-            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px;">
+            <div class="card-title">Position Visualization & Motor Status</div>
+            <div style="display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 20px;">
                 <div style="text-align: center;">
                     <div class="dial">
                         <div class="dial-pointer" id="dialPointer"></div>
@@ -178,37 +191,291 @@
                     </div>
                     <div style="margin-top: 15px;">
                         Current: <span id="dialCurrent">0.0&deg;</span><br>
-                        Target: <span id="dialTargetText">0.0&deg;</span>
+                        Target: <span id="dialTargetText">0.0&deg;</span><br>
+                        Error: <span id="dialError">0.0&deg;</span>
                     </div>
                 </div>
                 <div class="chart-container">
                     <canvas id="positionChart"></canvas>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 0.9rem; color: #60a5fa; margin-bottom: 10px;">Live Motor Data</div>
+                    <div class="status-item" style="margin-bottom: 10px; text-align: left;">
+                        <div style="font-size: 0.8rem; color: #94a3b8;">Current PID Values:</div>
+                        <div style="font-size: 0.75rem; margin-top: 5px;">
+                            Kp: <span id="livePidKp" style="color: #60a5fa;">--</span><br>
+                            Ki: <span id="livePidKi" style="color: #60a5fa;">--</span><br>
+                            Kd: <span id="livePidKd" style="color: #60a5fa;">--</span>
+                        </div>
+                    </div>
+                    <div class="status-item" style="margin-bottom: 10px; text-align: left;">
+                        <div style="font-size: 0.8rem; color: #94a3b8;">Motor Control:</div>
+                        <div style="font-size: 0.75rem; margin-top: 5px;">
+                            Power: <span id="motorPower" style="color: #22c55e;">--</span>%<br>
+                            Direction: <span id="motorDirection" style="color: #f59e0b;">--</span><br>
+                            Speed: <span id="motorSpeed" style="color: #ef4444;">--</span> RPM
+                        </div>
+                    </div>
+                    <div class="status-item" style="text-align: left;">
+                        <div style="font-size: 0.8rem; color: #94a3b8;">PID Output:</div>
+                        <div style="font-size: 0.75rem; margin-top: 5px;">
+                            P-term: <span id="pidOutputP" style="color: #60a5fa;">--</span><br>
+                            I-term: <span id="pidOutputI" style="color: #22c55e;">--</span><br>
+                            D-term: <span id="pidOutputD" style="color: #f59e0b;">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Advanced Charts -->
+        <div class="card">
+            <div class="card-title">📊 Training Analytics & Live Data</div>
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('rewards')">Reward Progress</div>
+                <div class="tab" onclick="switchTab('pid')">PID Parameters</div>
+                <div class="tab" onclick="switchTab('performance')">Performance Metrics</div>
+            </div>
+            
+            <div id="rewardsTab" class="tab-content active">
+                <div class="chart-container">
+                    <canvas id="rewardChart"></canvas>
+                </div>
+            </div>
+            
+            <div id="pidTab" class="tab-content">
+                <div class="chart-container">
+                    <canvas id="pidChart"></canvas>
+                </div>
+            </div>
+            
+            <div id="performanceTab" class="tab-content">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div class="chart-container" style="height: 200px;">
+                        <canvas id="errorChart"></canvas>
+                    </div>
+                    <div class="chart-container" style="height: 200px;">
+                        <canvas id="stabilityChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Export & Session Management -->
+        <div class="card">
+            <div class="card-title">💾 Data Export & Session Management</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
+                <div>
+                    <h4 style="color: #60a5fa; margin-bottom: 10px;">Current Session</h4>
+                    <div style="font-size: 0.9rem; color: #94a3b8;">
+                        <div>Session ID: <span id="sessionId">Not Started</span></div>
+                        <div>Data Points: <span id="dataPoints">0</span></div>
+                        <div>Duration: <span id="sessionDuration">00:00:00</span></div>
+                    </div>
+                </div>
+                <div>
+                    <h4 style="color: #60a5fa; margin-bottom: 10px;">Export Options</h4>
+                    <button class="button" onclick="exportData('json')">Export JSON</button>
+                    <button class="button" onclick="exportData('csv')">Export CSV</button>
+                    <button class="button success" onclick="exportData('both')">Export Both</button>
+                </div>
+                <div>
+                    <h4 style="color: #60a5fa; margin-bottom: 10px;">Visualizations</h4>
+                    <button class="button warning" onclick="generatePlots()">Generate Matplotlib Plots</button>
+                    <div id="plotStatus" style="font-size: 0.8rem; color: #94a3b8; margin-top: 5px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Reward Function Configuration -->
+        <div class="card">
+            <div class="card-title">🎯 Reward Function Configuration</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                <div>
+                    <h4 style="color: #60a5fa; margin-bottom: 15px;">Priorities (What to Value)</h4>
+                    <div class="slider-group">
+                        <label>🎛️ Stability: <span class="slider-value" id="stabilityWeightValue">50</span>%</label>
+                        <input type="range" class="slider" id="stabilityWeight" min="0" max="100" value="50">
+                        <small style="color: #94a3b8;">How much to value smooth, non-oscillating movement</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>🎯 Accuracy: <span class="slider-value" id="accuracyWeightValue">20</span>%</label>
+                        <input type="range" class="slider" id="accuracyWeight" min="0" max="100" value="20">
+                        <small style="color: #94a3b8;">How much to value reaching target position</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>📉 Cumulative Error: <span class="slider-value" id="cumulativeWeightValue">15</span>%</label>
+                        <input type="range" class="slider" id="cumulativeWeight" min="0" max="100" value="15">
+                        <small style="color: #94a3b8;">How much to penalize total accumulated error</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>⚖️ Settling: <span class="slider-value" id="settlingWeightValue">15</span>%</label>
+                        <input type="range" class="slider" id="settlingWeight" min="0" max="100" value="15">
+                        <small style="color: #94a3b8;">How much to value final steady-state performance</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>⏱️ Settling Time: <span class="slider-value" id="settlingTimeWeightValue">10</span>%</label>
+                        <input type="range" class="slider" id="settlingTimeWeight" min="0" max="100" value="10">
+                        <small style="color: #94a3b8;">How much to value fast time to reach stability</small>
+                    </div>
+                </div>
+                
+                <div>
+                    <h4 style="color: #ef4444; margin-bottom: 15px;">Risk Tolerance (Penalties)</h4>
+                    <div class="slider-group">
+                        <label>🚫 Overshoot Penalty: <span class="slider-value" id="overshootPenaltyValue">5.0</span>x</label>
+                        <input type="range" class="slider" id="overshootPenalty" min="0" max="10" step="0.1" value="5.0">
+                        <small style="color: #94a3b8;">Multiplier for overshoot penalties (0 = lenient, 10 = strict)</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>⚡ Stability Sensitivity: <span class="slider-value" id="stabilitySensitivityValue">3.0</span>x</label>
+                        <input type="range" class="slider" id="stabilitySensitivity" min="0" max="10" step="0.1" value="3.0">
+                        <small style="color: #94a3b8;">How sensitive to rapid movements (0 = allow, 10 = strict)</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>⚠️ Aggressive PID Penalty: <span class="slider-value" id="aggressivePenaltyValue">30</span>%</label>
+                        <input type="range" class="slider" id="aggressivePenalty" min="0" max="100" value="30">
+                        <small style="color: #94a3b8;">Penalty for high Kp/Ki/Kd values</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>🏆 Conservative Bonus: <span class="slider-value" id="conservativeBonusValue">20</span>%</label>
+                        <input type="range" class="slider" id="conservativeBonus" min="0" max="50" value="20">
+                        <small style="color: #94a3b8;">Bonus for stable, non-overshoot behavior</small>
+                    </div>
+                    
+                    <h4 style="color: #22c55e; margin-bottom: 15px; margin-top: 20px;">Settling Time Tuning</h4>
+                    <div class="slider-group">
+                        <label>🎯 Settling Threshold: <span class="slider-value" id="settlingThresholdValue">3.0</span>°</label>
+                        <input type="range" class="slider" id="settlingThreshold" min="0.5" max="10" step="0.1" value="3.0">
+                        <small style="color: #94a3b8;">Error threshold to consider "settled" (lower = stricter)</small>
+                    </div>
+                    
+                    <div class="slider-group">
+                        <label>⏳ Settling Window: <span class="slider-value" id="settlingWindowValue">1.0</span>s</label>
+                        <input type="range" class="slider" id="settlingWindow" min="0.2" max="3.0" step="0.1" value="1.0">
+                        <small style="color: #94a3b8;">Time that must stay within threshold (longer = more stable)</small>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 15px;">
+                <button class="button success" onclick="updateRewardConfig()">Update Reward Function</button>
+                <button class="button" onclick="resetRewardConfig()">Reset to Defaults</button>
+                <button class="button warning" onclick="showRewardPresets()">Load Presets</button>
+            </div>
+            
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(59, 130, 246, 0.2);">
+                <div style="font-size: 0.9rem; color: #94a3b8; text-align: center;">
+                    💡 <strong>Tip:</strong> For minimal overshoot, increase Overshoot Penalty and Stability Weight. 
+                    For faster settling, increase Settling Time Weight and decrease Settling Threshold. 
+                    For slower but more stable response, increase Settling Window duration.
                 </div>
             </div>
         </div>
 
         <!-- RL Training -->
         <div class="card">
-            <div class="card-title">RL Training</div>
+            <div class="card-title">🤖 PPO RL Training (Safe Online Learning)</div>
             <div style="display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 20px;">
                 <div>
                     <div class="input-group">
                         <label>Episodes</label>
-                        <input type="number" id="episodes" value="20">
+                        <input type="number" id="episodes" value="30" min="5" max="100">
                     </div>
                     <div class="input-group">
                         <label>Duration (s)</label>
-                        <input type="number" id="duration" value="8">
+                        <input type="number" id="duration" value="6">
                     </div>
-                    <button class="button success" onclick="startTraining()">Start Training</button>
+                    <div class="input-group">
+                        <label>Target (°)</label>
+                        <input type="number" id="rlTarget" value="180" step="1" min="0" max="360">
+                    </div>
+                    
+                    <!-- PPO Learning Controls -->
+                    <div style="margin-top: 12px; padding: 8px; background: rgba(15, 23, 42, 0.3); border-radius: 6px;">
+                        <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 8px;">Learning Controls:</div>
+                        
+                        <div class="input-group" style="margin-bottom: 8px;">
+                            <label style="font-size: 0.8rem;">Learning Speed: <span id="learningRateLabel">0.05</span></label>
+                            <input type="range" id="learningRate" min="0.01" max="0.15" step="0.01" value="0.05" 
+                                   oninput="document.getElementById('learningRateLabel').textContent = this.value" 
+                                   style="width: 100%;">
+                            <div style="font-size: 0.7rem; color: #6b7280; margin-top: 2px;">Slow ← → Fast</div>
+                        </div>
+                        
+                        <div class="input-group" style="margin-bottom: 8px;">
+                            <label style="font-size: 0.8rem;">Risk Level: <span id="explorationLabel">0.3</span></label>
+                            <input type="range" id="explorationRate" min="0.1" max="0.6" step="0.05" value="0.3" 
+                                   oninput="document.getElementById('explorationLabel').textContent = this.value" 
+                                   style="width: 100%;">
+                            <div style="font-size: 0.7rem; color: #6b7280; margin-top: 2px;">Safe ← → Risky</div>
+                        </div>
+                        
+                        <div style="margin-top: 6px;">
+                            <input type="checkbox" id="conservativeMode" checked>
+                            <label for="conservativeMode" style="font-size: 0.8rem;">Conservative Mode</label>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 10px;">
+                        <input type="checkbox" id="useBaseline" checked>
+                        <label for="useBaseline" style="font-size: 0.9rem;">Start from Baseline</label>
+                    </div>
+                    <button class="button success" onclick="startTraining()">Start PPO Training</button>
                     <button class="button danger" onclick="stopTraining()">Stop</button>
                 </div>
                 <div id="trainingStatus" style="text-align: center; color: #94a3b8;">
-                    Ready to train
+                    Ready for PPO training
                 </div>
                 <div style="text-align: center;">
+                    <div style="font-size: 0.9rem; margin-bottom: 8px;">Progress</div>
+                    <div>Episode: <span id="currentEpisode">0</span>/<span id="totalEpisodes">0</span></div>
                     <div>Best Reward: <span id="bestReward">--</span></div>
-                    <div>Episode: <span id="currentEpisode">0</span></div>
+                    <div>Avg Last 10: <span id="avgReward">--</span></div>
+                    <div style="margin-top: 8px; font-size: 0.8rem;">
+                        <div>Stability: <span id="stability">--</span></div>
+                        <div>Safety: <span id="safetyStatus">SAFE</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Detailed RL Info Panel -->
+            <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(59, 130, 246, 0.2);">
+                <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 10px;">PPO Training Details:</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                    <div class="status-item">
+                        <div style="font-size: 0.9rem; color: #60a5fa;">Current Test</div>
+                        <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 5px;">
+                            <div>Kp: <span id="currentKp">--</span></div>
+                            <div>Ki: <span id="currentKi">--</span></div>
+                            <div>Kd: <span id="currentKd">--</span></div>
+                            <div>Reward: <span id="currentReward">--</span></div>
+                        </div>
+                    </div>
+                    <div class="status-item">
+                        <div style="font-size: 0.9rem; color: #22c55e;">Best Found</div>
+                        <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 5px;">
+                            <div>Kp: <span id="bestKp">--</span></div>
+                            <div>Ki: <span id="bestKi">--</span></div>
+                            <div>Kd: <span id="bestKd">--</span></div>
+                            <div>Reward: <span id="bestRewardDetail">--</span></div>
+                        </div>
+                    </div>
+                    <div class="status-item">
+                        <div style="font-size: 0.9rem; color: #f59e0b;">Learning Stats</div>
+                        <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 5px;">
+                            <div>Exploration: <span id="explorationRate">--</span>%</div>
+                            <div>Param Stability: <span id="paramStability">--</span></div>
+                            <div>Method: <span id="trainingMethod">PPO</span></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -227,6 +494,26 @@
         let chartData = [];
         let currentAngle = 0;
         let targetAngle = 0;
+        let continuousCurrentAngle = 0;
+        let continuousTargetAngle = 0;
+        let lastRawCurrentAngle = 0;
+        let lastRawTargetAngle = 0;
+
+        function wrapAngleContinuous(newAngle, lastAngle, continuousAngle) {
+            // Handle angle wrapping to maintain continuity
+            let diff = newAngle - lastAngle;
+            
+            // If difference is greater than 180°, we wrapped from 360 to 0
+            if (diff > 180) {
+                diff -= 360;
+            }
+            // If difference is less than -180°, we wrapped from 0 to 360
+            else if (diff < -180) {
+                diff += 360;
+            }
+            
+            return continuousAngle + diff;
+        }
 
         function initChart() {
             const ctx = document.getElementById('positionChart').getContext('2d');
@@ -254,7 +541,19 @@
                     plugins: { legend: { labels: { color: '#cbd5e1' } } },
                     scales: {
                         x: { display: false },
-                        y: { min: 0, max: 360, ticks: { color: '#94a3b8' } }
+                        y: { 
+                            min: 0, 
+                            max: 360, 
+                            ticks: { 
+                                color: '#94a3b8',
+                                stepSize: 90
+                            },
+                            title: {
+                                display: true,
+                                text: 'Angle (°)',
+                                color: '#94a3b8'
+                            }
+                        }
                     },
                     animation: false
                 }
@@ -279,6 +578,10 @@
             
             currentAngle = 123.4;
             targetAngle = 90.0;
+            continuousCurrentAngle = 123.4;
+            continuousTargetAngle = 90.0;
+            lastRawCurrentAngle = 123.4;
+            lastRawTargetAngle = 90.0;
             
             document.getElementById('currentDegrees').textContent = '123.4°';
             document.getElementById('targetDegrees').textContent = '90.0°';
@@ -322,27 +625,42 @@
         });
 
         socket.on('training_complete', (data) => {
-            logMessage('Training complete! Episodes: ' + data.episodes_completed + ', Best reward: ' + data.best_reward.toFixed(2), 'response');
+            const method = data.training_method || 'PPO';
+            logMessage(`${method} training complete! Episodes: ${data.episodes_completed}, Best reward: ${data.best_reward.toFixed(2)}`, 'response');
             
             if (data.best_params) {
+                // Load best parameters into PID controls
                 document.getElementById('kpValue').value = data.best_params.kp.toFixed(3);
                 document.getElementById('kiValue').value = data.best_params.ki.toFixed(3);
                 document.getElementById('kdValue').value = data.best_params.kd.toFixed(3);
                 
-                logMessage('Best parameters loaded into PID controls - click "Update PID" to apply', 'response');
+                // Also update baseline with learned parameters
+                document.getElementById('baselineKp').value = data.best_params.kp.toFixed(3);
+                document.getElementById('baselineKi').value = data.best_params.ki.toFixed(3);
+                document.getElementById('baselineKd').value = data.best_params.kd.toFixed(3);
+                
+                logMessage(`Best parameters loaded into PID controls and saved as new baseline!`, 'response');
+                logMessage(`Final stability score: ${data.final_stability ? data.final_stability.toFixed(2) : 'N/A'}`, 'info');
             }
             
+            // Update training status display
             document.getElementById('trainingStatus').innerHTML = `
-                <div style="color: #22c55e;">Training Complete!</div>
-                <div style="font-size: 0.9rem; margin-top: 5px;">
+                <div style="color: #22c55e; font-size: 1.1rem;">${method} Complete!</div>
+                <div style="font-size: 0.85rem; margin-top: 8px; color: #94a3b8;">
+                    ${data.episodes_completed} episodes completed
+                </div>
+                <div style="font-size: 0.8rem; margin-top: 5px;">
                     Best: Kp=${data.best_params.kp.toFixed(3)}, 
                     Ki=${data.best_params.ki.toFixed(3)}, 
                     Kd=${data.best_params.kd.toFixed(3)}
                 </div>
-                <div style="font-size: 0.8rem; margin-top: 5px;">
-                    Reward: ${data.best_reward.toFixed(2)}
+                <div style="font-size: 0.75rem; margin-top: 5px; color: #60a5fa;">
+                    Reward: ${data.best_reward.toFixed(2)} | Stability: ${data.final_stability ? data.final_stability.toFixed(2) : 'N/A'}
                 </div>
             `;
+            
+            // Update training method display
+            document.getElementById('trainingMethod').textContent = method;
         });
 
         function connectArduino() {
@@ -385,10 +703,35 @@
         function startTraining() {
             const episodes = document.getElementById('episodes').value;
             const duration = document.getElementById('duration').value;
+            const target = document.getElementById('rlTarget').value;
+            const useBaseline = document.getElementById('useBaseline').checked;
+            
+            // Get learning parameters
+            const learningRate = parseFloat(document.getElementById('learningRate').value);
+            const explorationRate = parseFloat(document.getElementById('explorationRate').value);
+            const conservativeMode = document.getElementById('conservativeMode').checked;
+            
+            let baseline_params = null;
+            if (useBaseline) {
+                baseline_params = {
+                    'kp': parseFloat(document.getElementById('baselineKp').value),
+                    'ki': parseFloat(document.getElementById('baselineKi').value),
+                    'kd': parseFloat(document.getElementById('baselineKd').value)
+                };
+            }
+            
+            document.getElementById('totalEpisodes').textContent = episodes;
+            logMessage(`Starting PPO training: ${episodes} episodes, target ${target}°, baseline: ${useBaseline ? 'Yes' : 'No'}`, 'command');
+            logMessage(`Learning settings: Rate=${learningRate}, Risk=${explorationRate}, Conservative=${conservativeMode}`, 'info');
+            
             socket.emit('start_rl_training', {
                 episodes: parseInt(episodes),
                 duration: parseFloat(duration),
-                target: 180
+                target: parseFloat(target),
+                baseline_params: baseline_params,
+                learning_rate: learningRate,
+                exploration_rate: explorationRate,
+                conservative_mode: conservativeMode
             });
         }
 
@@ -448,10 +791,36 @@
                 currentAngle = data.degrees || 0;
                 targetAngle = data.target_degrees || 0;
                 
+                // Update continuous angles for smooth charting
+                continuousCurrentAngle = wrapAngleContinuous(currentAngle, lastRawCurrentAngle, continuousCurrentAngle);
+                continuousTargetAngle = wrapAngleContinuous(targetAngle, lastRawTargetAngle, continuousTargetAngle);
+                
+                lastRawCurrentAngle = currentAngle;
+                lastRawTargetAngle = targetAngle;
+                const error = data.error || 0;
+                
                 document.getElementById('currentDegrees').textContent = currentAngle.toFixed(1) + '°';
                 document.getElementById('targetDegrees').textContent = targetAngle.toFixed(1) + '°';
                 document.getElementById('pidStatus').textContent = data.pid_enabled ? 'ON' : 'OFF';
                 document.getElementById('motorStatus').textContent = data.pid_enabled ? 'RUNNING' : 'STOPPED';
+                
+                // Update dial error display
+                document.getElementById('dialError').textContent = Math.abs(error).toFixed(1) + '°';
+                
+                // Update live PID values
+                document.getElementById('livePidKp').textContent = data.kp ? data.kp.toFixed(3) : '--';
+                document.getElementById('livePidKi').textContent = data.ki ? data.ki.toFixed(3) : '--';
+                document.getElementById('livePidKd').textContent = data.kd ? data.kd.toFixed(3) : '--';
+                
+                // Update motor control data
+                document.getElementById('motorPower').textContent = data.motor_power ? Math.abs(data.motor_power).toFixed(0) : '--';
+                document.getElementById('motorDirection').textContent = data.motor_power ? (data.motor_power >= 0 ? 'CW' : 'CCW') : '--';
+                document.getElementById('motorSpeed').textContent = data.motor_speed ? data.motor_speed.toFixed(0) : '--';
+                
+                // Update PID output terms
+                document.getElementById('pidOutputP').textContent = data.pid_p ? data.pid_p.toFixed(1) : '--';
+                document.getElementById('pidOutputI').textContent = data.pid_i ? data.pid_i.toFixed(1) : '--';
+                document.getElementById('pidOutputD').textContent = data.pid_d ? data.pid_d.toFixed(1) : '--';
                 
                 updateChart();
                 updateDial();
@@ -460,6 +829,17 @@
             } else {
                 indicator.className = 'status-indicator disconnected';
                 text.textContent = 'Disconnected';
+                
+                // Clear live data when disconnected
+                document.getElementById('livePidKp').textContent = '--';
+                document.getElementById('livePidKi').textContent = '--';
+                document.getElementById('livePidKd').textContent = '--';
+                document.getElementById('motorPower').textContent = '--';
+                document.getElementById('motorDirection').textContent = '--';
+                document.getElementById('motorSpeed').textContent = '--';
+                document.getElementById('pidOutputP').textContent = '--';
+                document.getElementById('pidOutputI').textContent = '--';
+                document.getElementById('pidOutputD').textContent = '--';
             }
         }
 
@@ -476,28 +856,62 @@
         }
 
         function updateDial() {
+            // Use continuous angles for smooth dial rotation
             document.getElementById('dialPointer').style.transform = 
-                `translate(-50%, -100%) rotate(${currentAngle}deg)`;
+                `translate(-50%, -100%) rotate(${continuousCurrentAngle}deg)`;
             document.getElementById('dialTarget').style.transform = 
-                `translate(-50%, -100%) rotate(${targetAngle}deg)`;
+                `translate(-50%, -100%) rotate(${continuousTargetAngle}deg)`;
             document.getElementById('dialCurrent').textContent = currentAngle.toFixed(1) + '°';
             document.getElementById('dialTargetText').textContent = targetAngle.toFixed(1) + '°';
         }
 
         function updateTraining(data) {
+            // Update basic progress
             document.getElementById('currentEpisode').textContent = data.episode || 0;
+            document.getElementById('totalEpisodes').textContent = data.total_episodes || 0;
             document.getElementById('bestReward').textContent = (data.best_reward || 0).toFixed(2);
+            document.getElementById('avgReward').textContent = data.avg_reward_last_10 ? data.avg_reward_last_10.toFixed(1) : '--';
             
+            // Update current test parameters
+            if (data.current_params) {
+                document.getElementById('currentKp').textContent = data.current_params.kp.toFixed(3);
+                document.getElementById('currentKi').textContent = data.current_params.ki.toFixed(3);
+                document.getElementById('currentKd').textContent = data.current_params.kd.toFixed(3);
+                document.getElementById('currentReward').textContent = data.current_reward ? data.current_reward.toFixed(1) : '--';
+            }
+            
+            // Update best parameters
+            if (data.best_params) {
+                document.getElementById('bestKp').textContent = data.best_params.kp.toFixed(3);
+                document.getElementById('bestKi').textContent = data.best_params.ki.toFixed(3);
+                document.getElementById('bestKd').textContent = data.best_params.kd.toFixed(3);
+                document.getElementById('bestRewardDetail').textContent = data.best_reward ? data.best_reward.toFixed(1) : '--';
+            }
+            
+            // Update learning statistics
+            document.getElementById('explorationRate').textContent = data.exploration_rate ? (data.exploration_rate * 100).toFixed(1) : '--';
+            document.getElementById('paramStability').textContent = data.param_stability ? data.param_stability.toFixed(2) : '--';
+            document.getElementById('stability').textContent = data.param_stability ? (data.param_stability < 1 ? 'High' : data.param_stability < 3 ? 'Medium' : 'Low') : '--';
+            
+            // Update safety status
+            const safetyElement = document.getElementById('safetyStatus');
+            const safetyStatus = data.safety_status || 'SAFE';
+            safetyElement.textContent = safetyStatus;
+            safetyElement.style.color = safetyStatus === 'SAFE' ? '#22c55e' : '#f59e0b';
+            
+            // Update main status display
             if (data.current_params) {
                 document.getElementById('trainingStatus').innerHTML = `
-                    <div>Episode ${data.episode}/${data.total_episodes}</div>
-                    <div style="font-size: 0.9rem; margin-top: 5px;">
-                        Testing: Kp=${data.current_params.kp.toFixed(2)}, 
-                        Ki=${data.current_params.ki.toFixed(2)}, 
-                        Kd=${data.current_params.kd.toFixed(2)}
+                    <div style="color: #60a5fa; font-size: 1rem;">Episode ${data.episode}/${data.total_episodes}</div>
+                    <div style="font-size: 0.85rem; margin-top: 8px; color: #94a3b8;">
+                        PPO Policy Learning
                     </div>
-                    <div style="font-size: 0.8rem; margin-top: 5px; color: #94a3b8;">
-                        Current Reward: ${data.current_reward ? data.current_reward.toFixed(2) : '--'}
+                    <div style="font-size: 0.8rem; margin-top: 5px;">
+                        Current: ${data.current_reward ? data.current_reward.toFixed(1) : '--'} | 
+                        Best: ${data.best_reward ? data.best_reward.toFixed(1) : '--'}
+                    </div>
+                    <div style="font-size: 0.7rem; margin-top: 5px; color: ${safetyStatus === 'SAFE' ? '#22c55e' : '#f59e0b'};">
+                        ${safetyStatus} - Exploring safely
                     </div>
                 `;
             }
@@ -520,10 +934,282 @@
             log.scrollTop = log.scrollHeight;
         }
 
+        // Training data save modal
+        let trainingCompleteData = null;
+
+        socket.on('training_complete', (data) => {
+            trainingCompleteData = data;
+            if (data.ask_save) {
+                showSaveDialog(data);
+            }
+            
+            // Update training status
+            logMessage('Training complete! Episodes: ' + data.episodes_completed + ', Best reward: ' + data.best_reward.toFixed(2), 'response');
+            
+            if (data.best_params) {
+                document.getElementById('kpValue').value = data.best_params.kp.toFixed(3);
+                document.getElementById('kiValue').value = data.best_params.ki.toFixed(3);
+                document.getElementById('kdValue').value = data.best_params.kd.toFixed(3);
+                
+                logMessage('Best parameters loaded into PID controls - click "Update PID" to apply', 'response');
+            }
+        });
+
+        socket.on('training_data_saved', (data) => {
+            logMessage('Training data saved! Session: ' + data.session_id, 'success');
+            document.getElementById('plotStatus').textContent = 'Plots created: ' + data.plots_created.length + ' files';
+        });
+
+        function showSaveDialog(data) {
+            const modal = document.getElementById('saveModal');
+            document.getElementById('saveSessionId').textContent = data.session_id;
+            document.getElementById('saveEpisodes').textContent = data.episodes_completed;
+            document.getElementById('saveBestReward').textContent = data.best_reward.toFixed(2);
+            modal.style.display = 'block';
+        }
+
+        function closeSaveDialog() {
+            document.getElementById('saveModal').style.display = 'none';
+        }
+
+        function saveTrainingData(format) {
+            if (trainingCompleteData) {
+                socket.emit('save_training_data', {format: format});
+                closeSaveDialog();
+            }
+        }
+
+        // Reward configuration functions
+        function updateRewardConfig() {
+            const config = {
+                stability_weight: document.getElementById('stabilityWeight').value,
+                accuracy_weight: document.getElementById('accuracyWeight').value,
+                cumulative_weight: document.getElementById('cumulativeWeight').value,
+                settling_weight: document.getElementById('settlingWeight').value,
+                settling_time_weight: document.getElementById('settlingTimeWeight').value,
+                overshoot_penalty: document.getElementById('overshootPenalty').value,
+                stability_sensitivity: document.getElementById('stabilitySensitivity').value,
+                aggressive_penalty: document.getElementById('aggressivePenalty').value / 100,
+                conservative_bonus: document.getElementById('conservativeBonus').value / 100,
+                settling_threshold: document.getElementById('settlingThreshold').value,
+                settling_window: document.getElementById('settlingWindow').value
+            };
+            
+            socket.emit('update_reward_config', config);
+        }
+
+        function resetRewardConfig() {
+            const defaults = {
+                stabilityWeight: 40, accuracyWeight: 20, cumulativeWeight: 15, settlingWeight: 15, settlingTimeWeight: 10,
+                overshootPenalty: 5.0, stabilitySensitivity: 3.0, aggressivePenalty: 30, conservativeBonus: 20,
+                settlingThreshold: 3.0, settlingWindow: 1.0
+            };
+            
+            Object.keys(defaults).forEach(key => {
+                document.getElementById(key).value = defaults[key];
+                let suffix = '%';
+                if (key.includes('Penalty') || key.includes('Sensitivity')) suffix = 'x';
+                else if (key === 'settlingThreshold') suffix = '°';
+                else if (key === 'settlingWindow') suffix = 's';
+                
+                document.getElementById(key + 'Value').textContent = defaults[key] + suffix;
+            });
+            
+            updateRewardConfig();
+        }
+
+        // Slider update functions
+        document.addEventListener('DOMContentLoaded', function() {
+            const sliders = ['stabilityWeight', 'accuracyWeight', 'cumulativeWeight', 'settlingWeight', 'settlingTimeWeight',
+                           'overshootPenalty', 'stabilitySensitivity', 'aggressivePenalty', 'conservativeBonus',
+                           'settlingThreshold', 'settlingWindow'];
+            
+            sliders.forEach(sliderId => {
+                const slider = document.getElementById(sliderId);
+                const valueSpan = document.getElementById(sliderId + 'Value');
+                
+                slider.addEventListener('input', function() {
+                    let suffix = '%';
+                    if (sliderId.includes('Penalty') || sliderId.includes('Sensitivity')) suffix = 'x';
+                    else if (sliderId === 'settlingThreshold') suffix = '°';
+                    else if (sliderId === 'settlingWindow') suffix = 's';
+                    
+                    valueSpan.textContent = this.value + suffix;
+                });
+            });
+        });
+
+        // Tab switching
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            
+            // Show selected tab
+            document.getElementById(tabName + 'Tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // Export functions
+        function exportData(format) {
+            socket.emit('save_training_data', {format: format});
+            logMessage('Exporting data in ' + format + ' format...', 'info');
+        }
+
+        function generatePlots() {
+            socket.emit('save_training_data', {format: 'json'});
+            logMessage('Generating matplotlib visualizations...', 'info');
+        }
+
+        // Initialize additional charts
+        let rewardChart, pidChart, errorChart, stabilityChart;
+        let rewardData = [], pidData = [], errorData = [], stabilityData = [];
+
+        function initAdditionalCharts() {
+            // Reward Progress Chart
+            const rewardCtx = document.getElementById('rewardChart').getContext('2d');
+            rewardChart = new Chart(rewardCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Episode Reward',
+                        data: [],
+                        borderColor: '#22c55e',
+                        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'Moving Average',
+                        data: [],
+                        borderColor: '#f59e0b',
+                        borderWidth: 3,
+                        pointRadius: 0,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#cbd5e1' } } },
+                    scales: {
+                        x: { ticks: { color: '#94a3b8' } },
+                        y: { ticks: { color: '#94a3b8' } }
+                    }
+                }
+            });
+
+            // PID Parameters Chart
+            const pidCtx = document.getElementById('pidChart').getContext('2d');
+            pidChart = new Chart(pidCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Kp',
+                        data: [],
+                        borderColor: '#ef4444',
+                        tension: 0.4
+                    }, {
+                        label: 'Ki',
+                        data: [],
+                        borderColor: '#3b82f6',
+                        tension: 0.4
+                    }, {
+                        label: 'Kd',
+                        data: [],
+                        borderColor: '#8b5cf6',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#cbd5e1' } } },
+                    scales: {
+                        x: { ticks: { color: '#94a3b8' } },
+                        y: { ticks: { color: '#94a3b8' } }
+                    }
+                }
+            });
+        }
+
+        socket.on('training_update', (data) => {
+            updateTraining(data);
+            
+            // Update additional charts
+            if (rewardChart && data.current_reward !== undefined) {
+                rewardData.push({episode: data.episode, reward: data.current_reward});
+                if (rewardData.length > 50) rewardData.shift();
+                
+                const episodes = rewardData.map(d => d.episode);
+                const rewards = rewardData.map(d => d.reward);
+                
+                rewardChart.data.labels = episodes;
+                rewardChart.data.datasets[0].data = rewards;
+                
+                // Calculate moving average
+                const windowSize = 5;
+                const movingAvg = rewards.map((_, i) => {
+                    if (i < windowSize - 1) return null;
+                    const window = rewards.slice(i - windowSize + 1, i + 1);
+                    return window.reduce((sum, val) => sum + val, 0) / windowSize;
+                });
+                
+                rewardChart.data.datasets[1].data = movingAvg;
+                rewardChart.update('none');
+            }
+            
+            if (pidChart && data.current_params) {
+                pidData.push({
+                    episode: data.episode,
+                    kp: data.current_params.kp,
+                    ki: data.current_params.ki,
+                    kd: data.current_params.kd
+                });
+                if (pidData.length > 50) pidData.shift();
+                
+                pidChart.data.labels = pidData.map(d => d.episode);
+                pidChart.data.datasets[0].data = pidData.map(d => d.kp);
+                pidChart.data.datasets[1].data = pidData.map(d => d.ki);
+                pidChart.data.datasets[2].data = pidData.map(d => d.kd);
+                pidChart.update('none');
+            }
+        });
+
         window.onload = function() {
             initChart();
-            logMessage('Dashboard ready');
+            initAdditionalCharts();
+            socket.emit('get_reward_config'); // Load current config
+            logMessage('Advanced Dashboard ready with real-time analytics!');
         };
     </script>
+
+    <!-- Save Training Data Modal -->
+    <div id="saveModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeSaveDialog()">&times;</span>
+            <h2 style="color: #60a5fa; margin-bottom: 20px;">🎉 Training Complete!</h2>
+            
+            <div style="margin-bottom: 20px;">
+                <div><strong>Session ID:</strong> <span id="saveSessionId"></span></div>
+                <div><strong>Episodes Completed:</strong> <span id="saveEpisodes"></span></div>
+                <div><strong>Best Reward:</strong> <span id="saveBestReward"></span></div>
+            </div>
+            
+            <h3 style="color: #60a5fa; margin-bottom: 15px;">Save Training Data?</h3>
+            <p style="color: #94a3b8; margin-bottom: 20px;">
+                Would you like to save your training data and generate visualization plots? 
+                This will create CSV files, JSON data, and beautiful matplotlib charts for analysis.
+            </p>
+            
+            <div style="text-align: center;">
+                <button class="button success" onclick="saveTrainingData('both')">💾 Save All Data & Generate Plots</button>
+                <button class="button" onclick="saveTrainingData('csv')">CSV Only</button>
+                <button class="button" onclick="saveTrainingData('json')">JSON Only</button>
+                <button class="button warning" onclick="closeSaveDialog()">Skip</button>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

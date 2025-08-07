@@ -1,1 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.class
+
+# Data and logs (IGNORE ALL TRAINING DATA)
+data/
+logs/
+training_sessions/
+*.json
+*.csv
+*.png
+*.jpg
+*.jpeg
+
+# Virtual Environment
 venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp

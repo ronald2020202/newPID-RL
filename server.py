@@ -17,13 +17,23 @@ from typing import Dict, Optional, List
 import queue
 import traceback
 import os
+from collections import deque
+import random
+from scipy import stats
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import pandas as pd
+from datetime import datetime
+import csv
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ArduinoPIDController:
-    def __init__(self, arduino_ip: str, arduino_port: int = 80, timeout: float = 3.0):
+    def __init__(self, arduino_ip: str, arduino_port: int = 80, timeout: float = 1.0):  # Reduced timeout for lower latency
         self.arduino_ip = arduino_ip
         self.arduino_port = arduino_port
         self.timeout = timeout
@@ -32,6 +42,11 @@ class ArduinoPIDController:
         self.status_data = {}
         self.running = True
         self.last_heartbeat = 0
+        self.last_status_log = 0  # Rate limiting for verbose logging
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        self.last_reconnect_attempt = 0
+        self.reconnect_interval = 5.0  # Seconds between reconnect attempts
         
     def connect(self) -> bool:
         """Connect to Arduino over WiFi"""
@@ -119,7 +134,10 @@ class ArduinoPIDController:
                             break
                 
                 status_data = self._parse_status(status_line[7:])
-                logger.info(f"Final parsed status: {status_data}")
+                # Reduce logging verbosity - only log occasionally
+                if time.time() - self.last_status_log > 5.0:
+                    logger.info(f"Final parsed status: {status_data}")
+                    self.last_status_log = time.time()
                 return status_data
             else:
                 logger.warning(f"No STATUS found in response: '{response[:100]}...'")
@@ -167,16 +185,421 @@ class ArduinoPIDController:
     
     def is_healthy(self) -> bool:
         """Check if connection is healthy"""
-        return self.connected and (time.time() - self.last_heartbeat < 10.0)
+        return self.connected and (time.time() - self.last_heartbeat < 5.0)  # Reduced timeout for faster detection
+    
+    def should_reconnect(self) -> bool:
+        """Check if we should attempt reconnection"""
+        if self.connected:
+            return False
+        current_time = time.time()
+        return (current_time - self.last_reconnect_attempt > self.reconnect_interval and 
+                self.reconnect_attempts < self.max_reconnect_attempts)
+    
+    def auto_reconnect(self) -> bool:
+        """Attempt automatic reconnection"""
+        if not self.should_reconnect():
+            return False
+        
+        self.last_reconnect_attempt = time.time()
+        self.reconnect_attempts += 1
+        
+        logger.info(f"Auto-reconnect attempt {self.reconnect_attempts}/{self.max_reconnect_attempts}")
+        
+        if self.connect():
+            self.reconnect_attempts = 0  # Reset on successful connection
+            return True
+        
+        return False
+
+class DataLogger:
+    """Comprehensive data logging system"""
+    def __init__(self):
+        self.session_id = None
+        self.session_data = []
+        self.training_data = []
+        self.reward_history = []
+        self.pid_history = []
+        self.ensure_directories()
+    
+    def ensure_directories(self):
+        """Create necessary directories"""
+        os.makedirs('data', exist_ok=True)
+        os.makedirs('logs', exist_ok=True)
+        os.makedirs('training_sessions', exist_ok=True)
+    
+    def start_session(self, session_type="manual"):
+        """Start a new logging session"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_id = f"{session_type}_{timestamp}"
+        self.session_data = []
+        self.training_data = []
+        self.reward_history = []
+        self.pid_history = []
+        logger.info(f"Started logging session: {self.session_id}")
+    
+    def log_status(self, status_data):
+        """Log status data point"""
+        if self.session_id and status_data:
+            entry = {
+                'timestamp': time.time(),
+                'datetime': datetime.now().isoformat(),
+                **status_data
+            }
+            self.session_data.append(entry)
+    
+    def log_training_episode(self, episode, params, reward, target, duration):
+        """Log training episode data"""
+        if self.session_id:
+            entry = {
+                'episode': episode,
+                'timestamp': time.time(),
+                'datetime': datetime.now().isoformat(),
+                'kp': params['kp'],
+                'ki': params['ki'],
+                'kd': params['kd'],
+                'reward': reward,
+                'target': target,
+                'duration': duration
+            }
+            self.training_data.append(entry)
+            self.reward_history.append(reward)
+            self.pid_history.append(params.copy())
+    
+    def save_session(self, save_format='json'):
+        """Save session data to files"""
+        if not self.session_id:
+            return None
+        
+        session_dir = f"training_sessions/{self.session_id}"
+        os.makedirs(session_dir, exist_ok=True)
+        
+        files_created = []
+        
+        # Save as JSON
+        if save_format in ['json', 'both']:
+            json_file = f"{session_dir}/session_data.json"
+            with open(json_file, 'w') as f:
+                json.dump({
+                    'session_id': self.session_id,
+                    'status_data': self.session_data,
+                    'training_data': self.training_data,
+                    'reward_history': self.reward_history,
+                    'pid_history': self.pid_history
+                }, f, indent=2)
+            files_created.append(json_file)
+        
+        # Save as CSV
+        if save_format in ['csv', 'both']:
+            if self.training_data:
+                csv_file = f"{session_dir}/training_data.csv"
+                pd.DataFrame(self.training_data).to_csv(csv_file, index=False)
+                files_created.append(csv_file)
+            
+            if self.session_data:
+                status_csv = f"{session_dir}/status_data.csv"
+                pd.DataFrame(self.session_data).to_csv(status_csv, index=False)
+                files_created.append(status_csv)
+        
+        return files_created
+
+    def create_visualizations(self):
+        """Create matplotlib visualizations"""
+        if not self.session_id or not self.training_data:
+            return []
+        
+        session_dir = f"training_sessions/{self.session_id}"
+        plots_created = []
+        
+        # Set up the plotting style
+        plt.style.use('seaborn-v0_8' if 'seaborn-v0_8' in plt.style.available else 'default')
+        
+        # 1. Reward Progress Plot
+        fig, ax = plt.subplots(figsize=(12, 6))
+        episodes = [d['episode'] for d in self.training_data]
+        rewards = [d['reward'] for d in self.training_data]
+        
+        ax.plot(episodes, rewards, 'b-', linewidth=2, label='Episode Reward')
+        ax.plot(episodes, pd.Series(rewards).rolling(window=5).mean(), 'r-', linewidth=3, label='5-Episode Moving Average')
+        ax.set_xlabel('Episode')
+        ax.set_ylabel('Reward')
+        ax.set_title('Training Progress - Reward vs Episode')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        reward_plot = f"{session_dir}/reward_progress.png"
+        fig.savefig(reward_plot, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        plots_created.append(reward_plot)
+        
+        # 2. PID Parameters Evolution
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10))
+        
+        kp_values = [d['kp'] for d in self.training_data]
+        ki_values = [d['ki'] for d in self.training_data]
+        kd_values = [d['kd'] for d in self.training_data]
+        
+        ax1.plot(episodes, kp_values, 'g-', linewidth=2, label='Kp')
+        ax1.set_ylabel('Kp Value')
+        ax1.set_title('PID Parameter Evolution')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+        
+        ax2.plot(episodes, ki_values, 'orange', linewidth=2, label='Ki')
+        ax2.set_ylabel('Ki Value')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+        
+        ax3.plot(episodes, kd_values, 'purple', linewidth=2, label='Kd')
+        ax3.set_xlabel('Episode')
+        ax3.set_ylabel('Kd Value')
+        ax3.grid(True, alpha=0.3)
+        ax3.legend()
+        
+        pid_plot = f"{session_dir}/pid_evolution.png"
+        fig.savefig(pid_plot, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        plots_created.append(pid_plot)
+        
+        # 3. Reward vs PID Parameters Correlation
+        if len(self.training_data) > 10:
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+            
+            # Reward vs Kp
+            ax1.scatter(kp_values, rewards, alpha=0.6, c=episodes, cmap='viridis')
+            ax1.set_xlabel('Kp')
+            ax1.set_ylabel('Reward')
+            ax1.set_title('Reward vs Kp')
+            ax1.grid(True, alpha=0.3)
+            
+            # Reward vs Ki
+            ax2.scatter(ki_values, rewards, alpha=0.6, c=episodes, cmap='viridis')
+            ax2.set_xlabel('Ki')
+            ax2.set_ylabel('Reward')
+            ax2.set_title('Reward vs Ki')
+            ax2.grid(True, alpha=0.3)
+            
+            # Reward vs Kd
+            ax3.scatter(kd_values, rewards, alpha=0.6, c=episodes, cmap='viridis')
+            ax3.set_xlabel('Kd')
+            ax3.set_ylabel('Reward')
+            ax3.set_title('Reward vs Kd')
+            ax3.grid(True, alpha=0.3)
+            
+            # Best parameters highlight
+            best_idx = rewards.index(max(rewards))
+            best_kp, best_ki, best_kd = kp_values[best_idx], ki_values[best_idx], kd_values[best_idx]
+            
+            ax4.text(0.1, 0.8, f'Best Parameters:', fontsize=14, fontweight='bold', transform=ax4.transAxes)
+            ax4.text(0.1, 0.7, f'Kp: {best_kp:.3f}', fontsize=12, transform=ax4.transAxes)
+            ax4.text(0.1, 0.6, f'Ki: {best_ki:.3f}', fontsize=12, transform=ax4.transAxes)
+            ax4.text(0.1, 0.5, f'Kd: {best_kd:.3f}', fontsize=12, transform=ax4.transAxes)
+            ax4.text(0.1, 0.4, f'Reward: {max(rewards):.2f}', fontsize=12, transform=ax4.transAxes)
+            ax4.text(0.1, 0.3, f'Episode: {episodes[best_idx]}', fontsize=12, transform=ax4.transAxes)
+            ax4.set_xlim(0, 1)
+            ax4.set_ylim(0, 1)
+            ax4.set_title('Best Results Summary')
+            ax4.axis('off')
+            
+            correlation_plot = f"{session_dir}/reward_correlation.png"
+            fig.savefig(correlation_plot, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            plots_created.append(correlation_plot)
+        
+        return plots_created
 
 # Flask app setup
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'pid-controller-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
+class PPOPIDOptimizer:
+    """PPO-inspired PID parameter optimizer with safety constraints"""
+    
+    def __init__(self, baseline_params=None, learning_rate=0.05, exploration_rate=0.3, conservative_mode=True):
+        # Initialize with baseline or default parameters
+        if baseline_params:
+            self.current_params = baseline_params.copy()
+        else:
+            self.current_params = {'kp': 1.0, 'ki': 0.0, 'kd': 0.0}
+            
+        # Store learning settings
+        self.learning_rate = learning_rate
+        self.exploration_rate = exploration_rate
+        self.conservative_mode = conservative_mode
+        
+        # PPO hyperparameters
+        self.clip_epsilon = 0.2
+        self.entropy_coeff = 0.01
+        
+        # Safety constraints
+        self.param_bounds = {
+            'kp': (0.1, 50.0),  # Proportional gain bounds
+            'ki': (0.0, 10.0),  # Integral gain bounds  
+            'kd': (0.0, 20.0)   # Derivative gain bounds
+        }
+        
+        # Experience buffer
+        self.experience_buffer = deque(maxlen=100)
+        self.best_params = self.current_params.copy()
+        self.best_reward = -float('inf')
+        
+        # Performance tracking
+        self.episode_rewards = deque(maxlen=20)
+        self.param_history = deque(maxlen=50)
+        
+    def clip_params(self, params):
+        """Ensure parameters stay within safe bounds"""
+        clipped = {}
+        for key, value in params.items():
+            min_val, max_val = self.param_bounds[key]
+            clipped[key] = max(min_val, min(max_val, value))
+        return clipped
+    
+    def generate_safe_variation(self, base_params, std_scale=None):
+        """Generate parameter variation with safety constraints"""
+        new_params = {}
+        
+        # Use conservative_mode to determine variation scale
+        if std_scale is None:
+            if self.conservative_mode:
+                std_scale = 0.05  # Very small variations (5% of range)
+            else:
+                std_scale = 0.15  # Moderate variations (15% of range)
+        
+        for key, value in base_params.items():
+            # For conservative mode, vary based on current value rather than full range
+            if self.conservative_mode and value > 0:
+                # Vary by percentage of current value (much smaller changes)
+                std_dev = value * std_scale * 2  # 10% of current value
+            else:
+                # Traditional approach - vary by percentage of parameter bounds
+                min_val, max_val = self.param_bounds[key]
+                param_range = max_val - min_val
+                std_dev = param_range * std_scale
+            
+            # Generate variation with clipping
+            variation = np.random.normal(0, std_dev)
+            new_value = value + variation
+            
+            # Ensure within bounds
+            min_val, max_val = self.param_bounds[key]
+            new_params[key] = max(min_val, min(max_val, new_value))
+            
+        return new_params
+    
+    def update_policy(self, params, reward, episode):
+        """PPO-inspired policy update with safety features"""
+        # Store experience
+        self.experience_buffer.append({
+            'params': params.copy(),
+            'reward': reward,
+            'episode': episode
+        })
+        
+        self.episode_rewards.append(reward)
+        self.param_history.append(params.copy())
+        
+        # Update best parameters
+        if reward > self.best_reward:
+            self.best_reward = reward
+            self.best_params = params.copy()
+            logger.info(f"New best parameters: {self.best_params} with reward {reward:.2f}")
+        
+        # PPO-style update every few episodes
+        if len(self.experience_buffer) >= 10 and episode % 5 == 0:
+            self._ppo_update()
+    
+    def _ppo_update(self):
+        """Simplified PPO policy update"""
+        if len(self.experience_buffer) < 10:
+            return
+            
+        # Get recent experiences
+        recent_experiences = list(self.experience_buffer)[-10:]
+        rewards = [exp['reward'] for exp in recent_experiences]
+        
+        # Normalize rewards
+        if len(rewards) > 1:
+            reward_mean = np.mean(rewards)
+            reward_std = np.std(rewards) + 1e-8
+            normalized_rewards = [(r - reward_mean) / reward_std for r in rewards]
+        else:
+            normalized_rewards = rewards
+        
+        # Update current parameters towards better performing ones
+        if len(recent_experiences) >= 3:
+            # Find top 30% performers
+            sorted_exp = sorted(recent_experiences, key=lambda x: x['reward'], reverse=True)
+            top_performers = sorted_exp[:max(1, len(sorted_exp) // 3)]
+            
+            # Weighted average of top performers
+            total_weight = sum(exp['reward'] for exp in top_performers)
+            if total_weight > 0:
+                new_params = {'kp': 0, 'ki': 0, 'kd': 0}
+                for exp in top_performers:
+                    weight = exp['reward'] / total_weight
+                    for key in new_params:
+                        new_params[key] += weight * exp['params'][key]
+                
+                # Smooth update towards better parameters (conservative update)
+                update_rate = self.learning_rate
+                for key in self.current_params:
+                    self.current_params[key] = (
+                        (1.0 - update_rate) * self.current_params[key] + 
+                        update_rate * new_params[key]
+                    )
+                
+                # Ensure parameters stay within bounds
+                self.current_params = self.clip_params(self.current_params)
+    
+    def get_next_params(self, episode):
+        """Get next parameter set to test"""
+        if episode < 5:
+            # Initial exploration phase - test around baseline with conservative variations
+            if self.conservative_mode:
+                return self.generate_safe_variation(self.current_params, std_scale=0.08)  # 8% variation
+            else:
+                return self.generate_safe_variation(self.current_params, std_scale=0.2)
+        elif episode % 8 == 0 and len(self.experience_buffer) > 10:
+            # Periodically test best known parameters with small variation
+            return self.generate_safe_variation(self.best_params)  # Use default conservative scaling
+        else:
+            # Normal exploration around current policy
+            return self.generate_safe_variation(self.current_params)  # Use default conservative scaling
+    
+    def get_training_stats(self):
+        """Get detailed training statistics"""
+        stats = {
+            'current_params': self.current_params.copy(),
+            'best_params': self.best_params.copy(),
+            'best_reward': self.best_reward,
+            'episodes_completed': len(self.param_history),
+            'avg_reward_last_10': 0,
+            'param_stability': 0,
+            'exploration_rate': 0
+        }
+        
+        if len(self.episode_rewards) > 0:
+            recent_rewards = list(self.episode_rewards)[-10:]
+            stats['avg_reward_last_10'] = np.mean(recent_rewards)
+            
+            # Calculate parameter stability (lower = more stable)
+            if len(self.param_history) >= 5:
+                recent_params = list(self.param_history)[-5:]
+                kp_values = [p['kp'] for p in recent_params]
+                stats['param_stability'] = np.std(kp_values)
+                
+            # Estimate exploration rate
+            if len(recent_rewards) > 1:
+                stats['exploration_rate'] = np.std(recent_rewards) / (np.mean(recent_rewards) + 1e-8)
+        
+        return stats
+
 # Global variables
 arduino_controller = None
 training_active = False
+ppo_optimizer = None
+data_logger = DataLogger()
 training_data = {
     'active': False,
     'episode': 0,
@@ -186,6 +609,21 @@ training_data = {
     'completed': False
 }
 status_monitoring_active = False
+
+# Customizable reward function parameters
+reward_config = {
+    'stability_weight': 40,        # 0-100: How much to value stability
+    'accuracy_weight': 20,         # 0-100: How much to value accuracy  
+    'cumulative_weight': 15,       # 0-100: How much to penalize cumulative error
+    'settling_weight': 15,         # 0-100: How much to value settling performance
+    'settling_time_weight': 10,    # 0-100: How much to value fast settling time
+    'overshoot_penalty': 5.0,      # 0-10: Multiplier for overshoot penalty
+    'stability_sensitivity': 3.0,   # 0-10: How sensitive to movement changes
+    'aggressive_penalty': 0.3,      # 0-1: Penalty for aggressive parameters
+    'conservative_bonus': 0.2,      # 0-1: Bonus for stable non-overshoot behavior
+    'settling_threshold': 3.0,      # 0-10: Error threshold for "settled" (degrees)
+    'settling_window': 1.0          # 0-5: Time window that must stay within threshold (seconds)
+}
 
 def get_local_ip():
     """Get local IP address"""
@@ -406,6 +844,26 @@ def create_dashboard_template():
         let chartData = [];
         let currentAngle = 0;
         let targetAngle = 0;
+        let continuousCurrentAngle = 0;
+        let continuousTargetAngle = 0;
+        let lastRawCurrentAngle = 0;
+        let lastRawTargetAngle = 0;
+
+        function wrapAngleContinuous(newAngle, lastAngle, continuousAngle) {
+            // Handle angle wrapping to maintain continuity
+            let diff = newAngle - lastAngle;
+            
+            // If difference is greater than 180°, we wrapped from 360 to 0
+            if (diff > 180) {
+                diff -= 360;
+            }
+            // If difference is less than -180°, we wrapped from 0 to 360
+            else if (diff < -180) {
+                diff += 360;
+            }
+            
+            return continuousAngle + diff;
+        }
 
         function initChart() {
             const ctx = document.getElementById('positionChart').getContext('2d');
@@ -433,7 +891,19 @@ def create_dashboard_template():
                     plugins: { legend: { labels: { color: '#cbd5e1' } } },
                     scales: {
                         x: { display: false },
-                        y: { min: 0, max: 360, ticks: { color: '#94a3b8' } }
+                        y: { 
+                            min: 0, 
+                            max: 360, 
+                            ticks: { 
+                                color: '#94a3b8',
+                                stepSize: 90
+                            },
+                            title: {
+                                display: true,
+                                text: 'Angle (°)',
+                                color: '#94a3b8'
+                            }
+                        }
                     },
                     animation: false
                 }
@@ -458,6 +928,10 @@ def create_dashboard_template():
             
             currentAngle = 123.4;
             targetAngle = 90.0;
+            continuousCurrentAngle = 123.4;
+            continuousTargetAngle = 90.0;
+            lastRawCurrentAngle = 123.4;
+            lastRawTargetAngle = 90.0;
             
             document.getElementById('currentDegrees').textContent = '123.4°';
             document.getElementById('targetDegrees').textContent = '90.0°';
@@ -590,6 +1064,13 @@ def create_dashboard_template():
                 currentAngle = data.degrees || 0;
                 targetAngle = data.target_degrees || 0;
                 
+                // Update continuous angles for smooth charting
+                continuousCurrentAngle = wrapAngleContinuous(currentAngle, lastRawCurrentAngle, continuousCurrentAngle);
+                continuousTargetAngle = wrapAngleContinuous(targetAngle, lastRawTargetAngle, continuousTargetAngle);
+                
+                lastRawCurrentAngle = currentAngle;
+                lastRawTargetAngle = targetAngle;
+                
                 document.getElementById('currentDegrees').textContent = currentAngle.toFixed(1) + '°';
                 document.getElementById('targetDegrees').textContent = targetAngle.toFixed(1) + '°';
                 document.getElementById('pidStatus').textContent = data.pid_enabled ? 'ON' : 'OFF';
@@ -618,10 +1099,11 @@ def create_dashboard_template():
         }
 
         function updateDial() {
+            // Use continuous angles for smooth dial rotation
             document.getElementById('dialPointer').style.transform = 
-                `translate(-50%, -100%) rotate(${currentAngle}deg)`;
+                `translate(-50%, -100%) rotate(${continuousCurrentAngle}deg)`;
             document.getElementById('dialTarget').style.transform = 
-                `translate(-50%, -100%) rotate(${targetAngle}deg)`;
+                `translate(-50%, -100%) rotate(${continuousTargetAngle}deg)`;
             document.getElementById('dialCurrent').textContent = currentAngle.toFixed(1) + '°';
             document.getElementById('dialTargetText').textContent = targetAngle.toFixed(1) + '°';
         }
@@ -797,7 +1279,7 @@ def handle_send_command(data):
 
 @socketio.on('start_rl_training')
 def handle_start_training(data):
-    global training_active
+    global training_active, ppo_optimizer
     
     if not arduino_controller or not arduino_controller.connected:
         emit('log_message', {'message': 'Error: Arduino not connected', 'type': 'error'})
@@ -806,11 +1288,27 @@ def handle_start_training(data):
     episodes = data.get('episodes', 20)
     duration = data.get('duration', 8.0)
     target = data.get('target', 180.0)
+    baseline_params = data.get('baseline_params', None)  # Get baseline from webapp
+    
+    # Get learning parameters from webapp
+    learning_rate = data.get('learning_rate', 0.05)
+    exploration_rate = data.get('exploration_rate', 0.3)
+    conservative_mode = data.get('conservative_mode', True)
+    
+    # Initialize PPO optimizer with baseline parameters and learning settings
+    ppo_optimizer = PPOPIDOptimizer(
+        baseline_params=baseline_params,
+        learning_rate=learning_rate,
+        exploration_rate=exploration_rate,
+        conservative_mode=conservative_mode
+    )
     
     training_active = True
-    emit('log_message', {'message': f'Starting RL training: {episodes} episodes', 'type': 'command'})
+    emit('log_message', {'message': f'Starting PPO RL training: {episodes} episodes with baseline integration', 'type': 'command'})
+    emit('log_message', {'message': f'Baseline params: {ppo_optimizer.current_params}', 'type': 'info'})
+    emit('log_message', {'message': f'Learning settings: Rate={learning_rate}, Exploration={exploration_rate}, Conservative={conservative_mode}', 'type': 'info'})
     
-    training_thread = threading.Thread(target=run_training, args=(episodes, duration, target), daemon=True)
+    training_thread = threading.Thread(target=run_ppo_training, args=(episodes, duration, target), daemon=True)
     training_thread.start()
 
 @socketio.on('stop_rl_training')
@@ -818,6 +1316,65 @@ def handle_stop_training():
     global training_active
     training_active = False
     emit('log_message', {'message': 'Training stopped', 'type': 'warning'})
+
+@socketio.on('update_reward_config')
+def handle_update_reward_config(data):
+    global reward_config
+    
+    # Update reward configuration with validation
+    for key, value in data.items():
+        if key in reward_config:
+            if 'weight' in key:
+                reward_config[key] = max(0, min(100, float(value)))
+            elif key in ['overshoot_penalty', 'stability_sensitivity']:
+                reward_config[key] = max(0, min(10, float(value)))
+            elif key in ['aggressive_penalty', 'conservative_bonus']:
+                reward_config[key] = max(0, min(1, float(value)))
+            elif key == 'settling_threshold':
+                reward_config[key] = max(0.1, min(10, float(value)))
+            elif key == 'settling_window':
+                reward_config[key] = max(0.1, min(5, float(value)))
+            else:
+                reward_config[key] = float(value)
+    
+    emit('log_message', {'message': 'Reward function configuration updated with settling time parameters', 'type': 'info'})
+    emit('reward_config_updated', reward_config)
+
+@socketio.on('save_training_data')
+def handle_save_training_data(data):
+    global data_logger
+    
+    save_format = data.get('format', 'both')  # 'json', 'csv', or 'both'
+    
+    try:
+        # Save session data
+        files_created = data_logger.save_session(save_format)
+        
+        # Create visualizations
+        plots_created = data_logger.create_visualizations()
+        
+        emit('training_data_saved', {
+            'session_id': data_logger.session_id,
+            'files_created': files_created,
+            'plots_created': plots_created,
+            'message': f'Training data saved successfully! Session: {data_logger.session_id}'
+        })
+        
+        emit('log_message', {
+            'message': f'Data saved: {len(files_created)} files, {len(plots_created)} plots created',
+            'type': 'success'
+        })
+        
+    except Exception as e:
+        emit('log_message', {
+            'message': f'Error saving training data: {str(e)}',
+            'type': 'error'
+        })
+
+@socketio.on('get_reward_config')
+def handle_get_reward_config():
+    global reward_config
+    emit('reward_config', reward_config)
 
 def start_status_monitoring():
     """Start status monitoring thread"""
@@ -839,11 +1396,20 @@ def start_status_monitoring():
                     if status and len(status) > 1:
                         status['connected'] = True
                         
-                        print(f"Status update: degrees={status.get('degrees', 'N/A')}, target={status.get('target_degrees', 'N/A')}, pid={status.get('pid_enabled', 'N/A')}")
+                        # Log data for analysis
+                        data_logger.log_status(status)
+                        
+                        # Rate-limited logging (every 2 seconds)
+                        current_time = time.time()
+                        if current_time - arduino_controller.last_status_log > 2.0:
+                            print(f"Status update: degrees={status.get('degrees', 'N/A')}, target={status.get('target_degrees', 'N/A')}, pid={status.get('pid_enabled', 'N/A')}")
+                            arduino_controller.last_status_log = current_time
                         
                         try:
                             socketio.emit('arduino_status', status)
-                            print("Status sent to clients")
+                            # Only log websocket emissions occasionally
+                            if current_time - arduino_controller.last_status_log > 2.0:
+                                print("Status sent to clients")
                         except Exception as emit_error:
                             print(f"Failed to emit status: {emit_error}")
                         
@@ -859,9 +1425,15 @@ def start_status_monitoring():
                             socketio.emit('arduino_status', {'connected': False})
                             break
                 else:
-                    print("Arduino not connected, stopping monitoring")
-                    socketio.emit('arduino_status', {'connected': False})
-                    break
+                    print("Arduino not connected, attempting auto-reconnect...")
+                    if arduino_controller.auto_reconnect():
+                        print("Auto-reconnect successful!")
+                        socketio.emit('arduino_status', {'connected': True})
+                        continue
+                    else:
+                        print("Auto-reconnect failed, stopping monitoring")
+                        socketio.emit('arduino_status', {'connected': False})
+                        break
                     
             except Exception as e:
                 consecutive_failures += 1
@@ -872,7 +1444,7 @@ def start_status_monitoring():
                     socketio.emit('arduino_status', {'connected': False})
                     break
             
-            time.sleep(2.0)
+            time.sleep(0.2)  # Update 5 times per second
         
         print("Status monitoring thread stopped")
         status_monitoring_active = False
@@ -880,75 +1452,535 @@ def start_status_monitoring():
     thread = threading.Thread(target=monitor, daemon=True)
     thread.start()
 
-def run_training(episodes, duration, target):
-    """Run RL training"""
-    global training_active, arduino_controller
+def run_ppo_training(episodes, duration, target):
+    """Run PPO-based RL training with safety constraints"""
+    global training_active, arduino_controller, ppo_optimizer, data_logger
     
-    best_reward = -float('inf')
-    best_params = None
+    # Start logging session
+    data_logger.start_session("training")
+    
+    socketio.emit('log_message', {
+        'message': 'PPO training initialized with safety constraints and randomized targets',
+        'type': 'info'
+    })
+    
+    # Import random for target randomization
+    import random
     
     for episode in range(episodes):
         if not training_active:
             break
         
-        kp = np.random.uniform(1, 20)
-        ki = np.random.uniform(0, 2)
-        kd = np.random.uniform(5, 50)
+        # System health check before each episode
+        if not arduino_controller or not arduino_controller.connected:
+            socketio.emit('log_message', {
+                'message': f'Training stopped: Arduino disconnected at episode {episode+1}',
+                'type': 'error'
+            })
+            break
         
-        reward = test_parameters(kp, ki, kd, target, duration)
+        # Ensure system is in safe state before test
+        initial_status = arduino_controller.get_status()
+        if initial_status.get('pid_enabled', False):
+            socketio.emit('log_message', {
+                'message': f'Episode {episode+1}: PID was still enabled, turning off for safety...',
+                'type': 'warning'
+            })
+            arduino_controller.send_command('PID_OFF')
+            time.sleep(0.5)
         
-        if reward > best_reward:
-            best_reward = reward
-            best_params = {'kp': kp, 'ki': ki, 'kd': kd}
+        # Get next parameter set from PPO policy
+        test_params = ppo_optimizer.get_next_params(episode)
         
-        socketio.emit('training_update', {
-            'episode': episode + 1,
-            'best_reward': best_reward,
-            'best_params': best_params
+        socketio.emit('log_message', {
+            'message': f'Episode {episode+1}: Testing Kp={test_params["kp"]:.3f}, Ki={test_params["ki"]:.3f}, Kd={test_params["kd"]:.3f}',
+            'type': 'info'
         })
         
-        time.sleep(1)
+        # Add delay between episodes to let system settle
+        if episode > 0:
+            socketio.emit('log_message', {
+                'message': f'Waiting 2 seconds for system to settle before episode {episode+1}...',
+                'type': 'info'
+            })
+            time.sleep(2.0)
+        
+        # Randomize target for each episode (vary ±45° from original target)
+        episode_target = target + random.uniform(-45, 45)
+        episode_target = max(0, min(360, episode_target))  # Keep within 0-360° range
+        
+        # Test parameters and get reward
+        socketio.emit('log_message', {
+            'message': f'Starting parameter test for episode {episode+1} - Target: {episode_target:.1f}°...',
+            'type': 'info'
+        })
+        reward = test_parameters_safe(test_params['kp'], test_params['ki'], test_params['kd'], episode_target, duration)
+        
+        socketio.emit('log_message', {
+            'message': f'Episode {episode+1} completed with reward: {reward:.2f}',
+            'type': 'response' if reward > 0 else 'warning'
+        })
+        
+        # Log training episode data
+        data_logger.log_training_episode(episode + 1, test_params, reward, episode_target, duration)
+        
+        # Update PPO policy with results
+        ppo_optimizer.update_policy(test_params, reward, episode + 1)
+        
+        # Get training statistics
+        stats = ppo_optimizer.get_training_stats()
+        
+        # Send detailed update to webapp
+        socketio.emit('training_update', {
+            'episode': episode + 1,
+            'total_episodes': episodes,
+            'current_params': test_params,
+            'current_reward': reward,
+            'best_reward': stats['best_reward'],
+            'best_params': stats['best_params'],
+            'avg_reward_last_10': stats['avg_reward_last_10'],
+            'param_stability': stats['param_stability'],
+            'exploration_rate': stats['exploration_rate'],
+            'safety_status': 'SAFE' if reward > -50 else 'CAUTION'
+        })
+        
+        # Log progress every 5 episodes
+        if (episode + 1) % 5 == 0:
+            socketio.emit('log_message', {
+                'message': f'Episode {episode+1}/{episodes}: Best reward {stats["best_reward"]:.2f}, Avg last 10: {stats["avg_reward_last_10"]:.2f}',
+                'type': 'response'
+            })
+        
+        # Brief pause before next episode
+        if episode < episodes - 1 and training_active:  # Don't sleep after last episode
+            time.sleep(1.0)
     
+    # Training complete - ensure system is safe
     training_active = False
-    socketio.emit('log_message', {
-        'message': f'Training complete! Best: Kp={best_params["kp"]:.2f}, Ki={best_params["ki"]:.2f}, Kd={best_params["kd"]:.2f}',
-        'type': 'response'
-    })
-
-def test_parameters(kp, ki, kd, target, duration):
-    """Test PID parameters and return reward"""
+    
+    # Final safety check - make sure PID is off and motor stopped
     try:
         arduino_controller.send_command('PID_OFF')
         time.sleep(0.2)
-        arduino_controller.send_command('ZERO')
-        time.sleep(0.5)
+        arduino_controller.send_command('STOP')
+        socketio.emit('log_message', {
+            'message': 'Training complete - system returned to safe state',
+            'type': 'info'
+        })
+    except Exception as e:
+        logger.error(f"Error during training cleanup: {e}")
+    
+    final_stats = ppo_optimizer.get_training_stats()
+    
+    # Detailed training summary
+    socketio.emit('log_message', {
+        'message': f'=== TRAINING SUMMARY ===',
+        'type': 'info'
+    })
+    socketio.emit('log_message', {
+        'message': f'Episodes completed: {episodes}',
+        'type': 'info'
+    })
+    socketio.emit('log_message', {
+        'message': f'Best reward achieved: {final_stats["best_reward"]:.2f}',
+        'type': 'response'
+    })
+    socketio.emit('log_message', {
+        'message': f'Best parameters: Kp={final_stats["best_params"]["kp"]:.3f}, Ki={final_stats["best_params"]["ki"]:.3f}, Kd={final_stats["best_params"]["kd"]:.3f}',
+        'type': 'response'
+    })
+    socketio.emit('log_message', {
+        'message': f'Parameter stability: {final_stats["param_stability"]:.3f}',
+        'type': 'info'
+    })
+    socketio.emit('log_message', {
+        'message': f'Average reward (last 10): {final_stats["avg_reward_last_10"]:.2f}',
+        'type': 'info'
+    })
+    
+    socketio.emit('training_complete', {
+        'episodes_completed': episodes,
+        'best_reward': final_stats['best_reward'],
+        'best_params': final_stats['best_params'],
+        'final_stability': final_stats['param_stability'],
+        'training_method': 'PPO',
+        'session_id': data_logger.session_id,
+        'ask_save': True
+    })
+    
+    socketio.emit('log_message', {
+        'message': f'PPO training complete! Best: Kp={final_stats["best_params"]["kp"]:.3f}, Ki={final_stats["best_params"]["ki"]:.3f}, Kd={final_stats["best_params"]["kd"]:.3f} (Reward: {final_stats["best_reward"]:.2f})',
+        'type': 'response'
+    })
+
+def test_parameters_safe(kp, ki, kd, target, duration):
+    """Test PID parameters with enhanced safety and detailed reward calculation"""
+    try:
+        # Safety check: ensure parameters are within bounds
+        kp = max(0.1, min(50.0, kp))
+        ki = max(0.0, min(10.0, ki))
+        kd = max(0.0, min(20.0, kd))
         
-        arduino_controller.send_command(f'PID {kp} {ki} {kd}')
-        arduino_controller.send_command(f'TARGET {target}')
-        arduino_controller.send_command('PID_ON')
+        # Log what we're about to test
+        logger.info(f"Testing parameters: Kp={kp:.3f}, Ki={ki:.3f}, Kd={kd:.3f}, Target={target}°")
         
+        # Reset system safely - CRITICAL: Proper sequence
+        logger.info("Resetting system for parameter test...")
+        response1 = arduino_controller.send_command('PID_OFF')
+        logger.info(f"PID_OFF response: {response1}")
+        time.sleep(0.5)  # Give time for PID to turn off
+        
+        response2 = arduino_controller.send_command('STOP')
+        logger.info(f"STOP response: {response2}")
+        time.sleep(0.3)
+        
+        response3 = arduino_controller.send_command('ZERO')
+        logger.info(f"ZERO response: {response3}")
+        time.sleep(1.0)  # Give more time for zeroing
+        
+        # CRITICAL: Verify system is ready
+        initial_status = arduino_controller.get_status()
+        if initial_status.get('pid_enabled', True):  # Should be False after PID_OFF
+            logger.warning("PID still enabled after PID_OFF command!")
+            arduino_controller.send_command('PID_OFF')  # Try again
+            time.sleep(0.5)
+        
+        # Apply parameters with verification
+        pid_command = f'PID {kp:.3f} {ki:.3f} {kd:.3f}'
+        logger.info(f"Sending PID command: {pid_command}")
+        response = arduino_controller.send_command(pid_command)
+        logger.info(f"PID command response: {response}")
+        
+        if response.startswith('ERROR'):
+            logger.error(f"PID command failed: {response}")
+            return -100  # Severe penalty for failed commands
+        
+        time.sleep(0.2)  # Let parameters settle
+        
+        # Verify parameters were applied by checking status
+        param_status = arduino_controller.get_status()
+        actual_kp = param_status.get('kp', 'unknown')
+        actual_ki = param_status.get('ki', 'unknown')
+        actual_kd = param_status.get('kd', 'unknown')
+        logger.info(f"Arduino reports: Kp={actual_kp}, Ki={actual_ki}, Kd={actual_kd}")
+        
+        # Set target and enable PID
+        target_command = f'TARGET {target}'
+        logger.info(f"Sending target command: {target_command}")
+        response4 = arduino_controller.send_command(target_command)
+        logger.info(f"TARGET response: {response4}")
+        time.sleep(0.2)
+        
+        logger.info("Enabling PID for test...")
+        response5 = arduino_controller.send_command('PID_ON')
+        logger.info(f"PID_ON response: {response5}")
+        
+        # Give PID a moment to start
+        time.sleep(0.3)
+        
+        # Verify PID is actually enabled - be more tolerant of empty status
+        verify_status = arduino_controller.get_status()
+        logger.info(f"Post-enable verification: PID enabled = {verify_status.get('pid_enabled', 'unknown')}, connected = {verify_status.get('connected', 'unknown')}")
+        
+        # Only fail if we get consistent empty responses (real connection loss)
+        if not verify_status or len(verify_status) == 0:
+            # Try again once before failing
+            time.sleep(0.2)
+            verify_status_retry = arduino_controller.get_status()
+            if not verify_status_retry or len(verify_status_retry) == 0:
+                logger.error("DEBUG: RETURNING -200 - Connection lost during PID enable verification (empty status after retry)!")
+                logger.error(f"DEBUG: verify_status = {verify_status}, retry = {verify_status_retry}")
+                return -200
+            else:
+                logger.info("First verification failed but retry succeeded - continuing test")
+                verify_status = verify_status_retry
+        if not verify_status.get('pid_enabled', False):
+            logger.warning("PID reports as disabled, but continuing test (might be Arduino reporting delay)")
+            # Don't abort - continue with test as Arduino might have delay in reporting
+        
+        # Data collection with enhanced metrics and logging
+        logger.info(f"Starting data collection for {duration} seconds...")
         start_time = time.time()
         errors = []
+        positions = []
+        derivatives = []
+        data_points = 0
+        consecutive_failures = 0  # Track consecutive failed readings
+        max_consecutive_failures = 30  # Allow up to 3 seconds of consecutive failures
         
         while time.time() - start_time < duration:
             status = arduino_controller.get_status()
-            error = abs(status.get('error', 0))
-            errors.append(error)
+            
+            # DEBUG: Log what we're actually getting from Arduino
+            logger.info(f"DEBUG: status received = {status}, type = {type(status)}")
+            
+            # More tolerant data collection - handle delayed or missing data gracefully
+            if status and len(status) > 0:
+                consecutive_failures = 0  # Reset failure counter on successful read
+                
+                error = status.get('error', None)
+                position = status.get('degrees', None)
+                pid_enabled = status.get('pid_enabled', True)  # Default to enabled
+                connected = status.get('connected', True)  # Default to connected
+                
+                # Handle missing data more gracefully
+                if error is None or position is None:
+                    logger.debug(f"Partial data in status: error={error}, position={position}")
+                    # Try to calculate error from position and target if possible
+                    if position is not None:
+                        error = abs(position - target)
+                    elif len(positions) > 0:
+                        # Use last known position if current is missing
+                        position = positions[-1]
+                        error = abs(position - target)
+                    else:
+                        # Skip this reading rather than use defaults
+                        consecutive_failures += 1
+                        time.sleep(0.1)
+                        continue
+                
+                errors.append(abs(error))
+                positions.append(position)
+                data_points += 1
+                
+                # Log every 20 data points to monitor progress
+                if data_points % 20 == 0:
+                    logger.info(f"Test progress: {data_points} points, current pos={position:.1f}°, error={error:.1f}°, PID={pid_enabled}")
+                
+                # Only re-enable PID if we're sure it should be on
+                if not pid_enabled and data_points > 10:  # Give some time for PID to activate
+                    logger.warning("PID disabled during test! Re-enabling...")
+                    arduino_controller.send_command('PID_ON')
+                    time.sleep(0.1)
+                
+                # Calculate derivative for stability assessment
+                if len(positions) >= 2:
+                    derivative = abs(positions[-1] - positions[-2])
+                    derivatives.append(derivative)
+            else:
+                # Handle missing status data - only abort after sustained failure
+                consecutive_failures += 1
+                logger.debug(f"No status data received (failure #{consecutive_failures})")
+                
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.error(f"DEBUG: RETURNING -200 due to {consecutive_failures} consecutive failures in data collection loop")
+                    arduino_controller.send_command('PID_OFF')
+                    return -200
+                
+                # For occasional missing data, just skip this reading
+                # This allows for network delays, Arduino processing delays, etc.
+            
             time.sleep(0.1)
         
-        arduino_controller.send_command('PID_OFF')
+        # Stop PID safely with logging
+        logger.info(f"Test complete. Collected {len(errors)} data points.")
+        if positions:
+            final_pos = positions[-1]
+            final_error = errors[-1] if errors else 0
+            logger.info(f"Final position: {final_pos:.1f}°, final error: {final_error:.1f}°")
         
-        if errors:
-            mean_error = np.mean(errors)
-            reward = max(0, 100 - mean_error)
+        stop_response1 = arduino_controller.send_command('PID_OFF')
+        logger.info(f"Test end PID_OFF response: {stop_response1}")
+        time.sleep(0.2)
+        stop_response2 = arduino_controller.send_command('STOP')
+        logger.info(f"Test end STOP response: {stop_response2}")
+        time.sleep(0.3)  # Let motor stop completely
+        
+        # Calculate comprehensive reward with detailed logging
+        expected_data_points = int(duration * 10)  # 10 Hz sampling
+        actual_data_points = len(errors)
+        
+        logger.info(f"Reward calculation: Expected {expected_data_points} points, got {actual_data_points}")
+        
+        if errors and actual_data_points >= max(5, expected_data_points * 0.3):  # At least 30% of expected data or 5 points minimum
+            # Track raw error (signed) to detect overshoot
+            signed_errors = []
+            for i, position in enumerate(positions):
+                signed_error = target - position  # Positive = undershoot, Negative = overshoot
+                signed_errors.append(signed_error)
+            
+            # Use configurable reward parameters
+            reward_breakdown = calculate_configurable_reward(
+                signed_errors, errors, derivatives, positions, target, kp, ki, kd
+            )
+            
+            return reward_breakdown['total_reward']
         else:
-            reward = 0
-        
-        return reward
+            # Insufficient data collected
+            logger.warning(f"Insufficient data for reward calculation: {actual_data_points}/{expected_data_points}")
+            return -50
         
     except Exception as e:
         logger.error(f"Parameter test error: {e}")
-        return 0
+        # Ensure system is safe after error
+        try:
+            arduino_controller.send_command('PID_OFF')
+            arduino_controller.send_command('STOP')
+        except:
+            pass
+        return -100  # Penalty for test failure
+
+def calculate_configurable_reward(signed_errors, errors, derivatives, positions, target, kp, ki, kd):
+    """Configurable reward function based on user preferences"""
+    global reward_config
+    
+    reward_breakdown = {
+        'stability_reward': 0,
+        'accuracy_reward': 0,
+        'cumulative_reward': 0,
+        'settling_reward': 0,
+        'settling_time_reward': 0,
+        'overshoot_penalty': 0,
+        'parameter_penalty': 0,
+        'conservative_bonus': 0,
+        'total_reward': 0
+    }
+    
+    # OVERSHOOT DETECTION AND CONFIGURABLE PENALTY
+    max_overshoot = 0
+    overshoot_count = 0
+    
+    for signed_error in signed_errors:
+        if signed_error < 0:  # Overshoot detected
+            overshoot_amount = abs(signed_error)
+            max_overshoot = max(max_overshoot, overshoot_amount)
+            overshoot_count += 1
+    
+    if overshoot_count > 0:
+        overshoot_percentage = overshoot_count / len(signed_errors) * 100
+        overshoot_penalty = (
+            max_overshoot * reward_config['overshoot_penalty'] +
+            overshoot_percentage * (reward_config['overshoot_penalty'] / 2) +
+            (100 if max_overshoot > 10 else 0)
+        )
+        reward_breakdown['overshoot_penalty'] = overshoot_penalty
+        logger.info(f"OVERSHOOT: Max={max_overshoot:.1f}°, {overshoot_percentage:.1f}% of time, penalty={overshoot_penalty:.1f}")
+    
+    # STABILITY COMPONENT (configurable)
+    stability_reward = 100
+    if derivatives and len(derivatives) > 5:
+        mean_derivative = np.mean(derivatives)
+        max_derivative = np.max(derivatives) if derivatives else 0
+        derivative_std = np.std(derivatives) if len(derivatives) > 1 else 0
+        
+        stability_penalty = (
+            mean_derivative * reward_config['stability_sensitivity'] +
+            max_derivative * (reward_config['stability_sensitivity'] / 2) +
+            derivative_std * reward_config['stability_sensitivity']
+        )
+        stability_reward = max(0, stability_reward - stability_penalty)
+        
+        logger.info(f"Stability: mean_deriv={mean_derivative:.2f}, max_deriv={max_derivative:.2f}, std={derivative_std:.2f}")
+    
+    reward_breakdown['stability_reward'] = stability_reward
+    
+    # ACCURACY AND CUMULATIVE ERROR
+    cumulative_error = np.sum(errors)
+    mean_error = np.mean(errors)
+    
+    cumulative_reward = max(0, 50 - cumulative_error/10)
+    accuracy_reward = max(0, 50 - mean_error)
+    
+    reward_breakdown['cumulative_reward'] = cumulative_reward
+    reward_breakdown['accuracy_reward'] = accuracy_reward
+    
+    # SETTLING PERFORMANCE
+    final_portion = 0.3
+    final_errors = errors[-int(len(errors)*final_portion):] if len(errors) > 10 else errors
+    final_signed_errors = signed_errors[-int(len(signed_errors)*final_portion):] if len(signed_errors) > 10 else signed_errors
+    
+    settling_reward = 50
+    if final_errors:
+        final_mean_error = np.mean(final_errors)
+        final_std_error = np.std(final_errors) if len(final_errors) > 1 else 0
+        final_max_error = np.max(final_errors)
+        final_overshoot = any(err < 0 for err in final_signed_errors)
+        
+        settling_penalty = (
+            final_mean_error * 2.0 +
+            final_std_error * 5.0 +
+            final_max_error * 1.5 +
+            (50 if final_overshoot else 0)
+        )
+        settling_reward = max(0, settling_reward - settling_penalty)
+    
+    reward_breakdown['settling_reward'] = settling_reward
+    
+    # SETTLING TIME COMPONENT (you value fast settling)
+    settling_time_reward = 50  # Start with base reward
+    settling_threshold = reward_config['settling_threshold']
+    settling_window_seconds = reward_config['settling_window']
+    
+    # Calculate settling time - time to reach and maintain stable position
+    settling_time = None
+    data_rate = 10  # 10 Hz sampling rate
+    window_size = max(1, int(settling_window_seconds * data_rate))
+    
+    if len(errors) > window_size:
+        # Look for the first point where error stays within threshold for the required window
+        for i in range(window_size, len(errors)):
+            window_errors = errors[i-window_size:i]
+            if all(err <= settling_threshold for err in window_errors):
+                # Also check for no overshoot in this window
+                window_signed_errors = signed_errors[i-window_size:i] if i <= len(signed_errors) else []
+                if not any(err < 0 for err in window_signed_errors):  # No overshoot
+                    settling_time = (i - window_size) / data_rate  # Time in seconds
+                    break
+        
+        if settling_time is not None:
+            # Reward faster settling (lower settling time = higher reward)
+            max_settling_time = len(errors) / data_rate  # Total test duration
+            settling_time_ratio = settling_time / max_settling_time
+            
+            # Linear reward: 100% for instant settling, 0% for never settling
+            settling_time_reward = max(0, 50 * (1.0 - settling_time_ratio))
+            
+            logger.info(f"Settling time: {settling_time:.2f}s (ratio: {settling_time_ratio:.2f})")
+        else:
+            # Never settled - heavy penalty
+            settling_time_reward = 0
+            logger.info("System never settled within threshold")
+    
+    reward_breakdown['settling_time_reward'] = settling_time_reward
+    
+    # COMBINE REWARDS WITH CONFIGURABLE WEIGHTS (normalize to 100)
+    weight_sum = (reward_config['stability_weight'] + reward_config['accuracy_weight'] + 
+                  reward_config['cumulative_weight'] + reward_config['settling_weight'] +
+                  reward_config['settling_time_weight'])
+    
+    if weight_sum > 0:
+        base_reward = (
+            (reward_config['stability_weight'] / weight_sum) * stability_reward +
+            (reward_config['accuracy_weight'] / weight_sum) * accuracy_reward +
+            (reward_config['cumulative_weight'] / weight_sum) * cumulative_reward +
+            (reward_config['settling_weight'] / weight_sum) * settling_reward +
+            (reward_config['settling_time_weight'] / weight_sum) * settling_time_reward
+        )
+    else:
+        base_reward = (stability_reward + accuracy_reward + cumulative_reward + settling_reward + settling_time_reward) / 5
+    
+    # Apply penalties and bonuses
+    total_reward = base_reward - reward_breakdown['overshoot_penalty']
+    
+    # Parameter aggressiveness penalty
+    if kp > 20 or ki > 3 or kd > 10:
+        penalty_factor = 1.0 - reward_config['aggressive_penalty']
+        total_reward *= penalty_factor
+        reward_breakdown['parameter_penalty'] = base_reward * reward_config['aggressive_penalty']
+    
+    # Conservative behavior bonus
+    if max_overshoot == 0 and stability_reward > 80:
+        bonus_factor = 1.0 + reward_config['conservative_bonus']
+        total_reward *= bonus_factor
+        reward_breakdown['conservative_bonus'] = total_reward * reward_config['conservative_bonus'] / bonus_factor
+    
+    reward_breakdown['total_reward'] = total_reward
+    
+    logger.info(f"REWARD BREAKDOWN: stability={stability_reward:.1f}, accuracy={accuracy_reward:.1f}, "
+                f"cumulative={cumulative_reward:.1f}, settling={settling_reward:.1f}, "
+                f"settling_time={settling_time_reward:.1f}, total={total_reward:.1f}")
+    
+    return reward_breakdown
 
 if __name__ == '__main__':
     print("=" * 60)
